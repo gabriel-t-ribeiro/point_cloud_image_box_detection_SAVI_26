@@ -1,192 +1,170 @@
+#!/usr/bin/env python3
+"""SAVIBoxes - Trabalho 1.
+
+Usage (from inside Trabalho1/):
+    ./main.py --scene scenes/level_1 --num_boxes 1
+    ./main.py --scene scenes/level_2 --num_boxes 3 --show            # open the 3D windows
+    ./main.py --scene scenes/level_1 --num_boxes 1 --registration custom   # Dinis's RANSAC
+
+Steps:
+    Part 1  registration.py   align all cameras with camera 000, aggregate the clouds
+    Part 2  segmentation.py   table plane, table frame, objects above the table
+    Part 3  bounding_box.py   base method: z-up bounding box per object
+            (the optimization method is still to do)
+    evaluation.py compares with ground_truth.json when the scene has it.
+Writes result.json (default: inside the scene folder).
+"""
+
+import argparse
+import json
 import os
+import time
+
 import numpy as np
 import open3d as o3d
 
-# Parametros (ajustar a escala das nuvens)
-FOLDER = "point_clouds/table"
-VOXEL_SIZE = 0.03                    # downsampling para o FPFH e o RANSAC
-RANSAC_MAX_ITERATIONS = 50000        # numero maximo de iteracoes do RANSAC
-RANSAC_CONFIDENCE = 0.999            # o RANSAC pára quando atinge esta confianca
-NORMAL_RADIUS = VOXEL_SIZE * 2       # vizinhanca para estimar as normais
-FPFH_RADIUS = VOXEL_SIZE * 5         # vizinhanca para calcular as features FPFH
-RANSAC_DISTANCE = VOXEL_SIZE * 1.5   # distancia maxima entre pontos associados no RANSAC
-ICP_THRESHOLD = 0.05                 # distancia maxima de associacao no ICP
-WEIGHT_SCALE = 1.5                   # distancia a origem (m) a que o peso de um ponto desce para 0.5
+import bounding_box
+import evaluation
+import registration
+import segmentation
 
-registration = o3d.pipelines.registration
-
-
-def draw(clouds, window_name):
-    # Mostra as nuvens rodadas 180 graus em x, para ter a mesa virada para cima (so afeta a visualizacao, nao os dados)
-    flip_x = np.diag([1.0, -1.0, -1.0, 1.0])
-    rotated = []
-    for cloud in clouds:
-        cloud_rotated = o3d.geometry.PointCloud(cloud)
-        cloud_rotated.transform(flip_x)
-        rotated.append(cloud_rotated)
-    o3d.visualization.draw_geometries(rotated, window_name=window_name)
-
-
-def preprocess(point_cloud):
-    # Downsampling + normais + features FPFH de cada ponto
-    down = point_cloud.voxel_down_sample(VOXEL_SIZE)
-    down.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=NORMAL_RADIUS, max_nn=30)
-    )
-    fpfh = registration.compute_fpfh_feature(
-        down, o3d.geometry.KDTreeSearchParamHybrid(radius=FPFH_RADIUS, max_nn=100)
-    )
-    return down, fpfh
-
-
-def match_features(source_fpfh, target_fpfh):
-    # Associacoes entre features: pares (i, j) em que i e j sao o vizinho mais proximo um do outro
-    source_tree = o3d.geometry.KDTreeFlann(source_fpfh)
-    target_tree = o3d.geometry.KDTreeFlann(target_fpfh)
-    source_to_target = [target_tree.search_knn_vector_xd(source_fpfh.data[:, i], 1)[1][0]
-                        for i in range(source_fpfh.data.shape[1])]
-    target_to_source = [source_tree.search_knn_vector_xd(target_fpfh.data[:, j], 1)[1][0]
-                        for j in range(target_fpfh.data.shape[1])]
-    return np.array([(i, j) for i, j in enumerate(source_to_target) if target_to_source[j] == i])
-
-
-def estimate_rigid_transform(src, dst):
-    # Transformacao rigida (Kabsch) que leva os pontos src para os pontos dst
-    src_center, dst_center = src.mean(axis=0), dst.mean(axis=0)
-    U, _, Vt = np.linalg.svd((src - src_center).T @ (dst - dst_center))
-    D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
-    R = Vt.T @ D @ U.T
-
-    T = np.eye(4)
-    T[:3, :3] = R
-    T[:3, 3] = dst_center - R @ src_center
-    return T
-
-
-def ransac(source_down, target_down, source_fpfh, target_fpfh):
-    # RANSAC em que as associacoes perto da origem sao mais escolhidas e valem mais na pontuacao
-    rng = np.random.default_rng(0)
-
-    pairs = match_features(source_fpfh, target_fpfh)
-    if len(pairs) < 3:
-        raise ValueError("Poucas associacoes entre features para correr o RANSAC")
-
-    src = np.asarray(source_down.points)[pairs[:, 0]]
-    dst = np.asarray(target_down.points)[pairs[:, 1]]
-    src_normals = np.asarray(source_down.normals)[pairs[:, 0]]
-    dst_normals = np.asarray(target_down.normals)[pairs[:, 1]]
-
-    # Ajustar os pesos com base na distâsncia à origem (priveligiar ter a mesa alinhada em vez do backgropund)
-    weights = 1.0 / (1.0 + (np.linalg.norm(dst, axis=1) / WEIGHT_SCALE) ** 2)
-    probabilities = weights / weights.sum()
-
-    best_T = np.eye(4)
-    best_score = 0.0
-    max_iterations = RANSAC_MAX_ITERATIONS
-    iteration = 0
-
-    while iteration < max_iterations:
-        iteration += 1
-
-        # Escolher 3 associacoes, com mais probabilidade para as perto da origem
-        idx = rng.choice(len(pairs), 3, replace=False, p=probabilities)
-        a, b = src[idx], dst[idx]
-
-        # Verificacao do comprimento das arestas (como CorrespondenceCheckerBasedOnEdgeLength(0.9))
-        src_edges = np.linalg.norm(a[[0, 0, 1]] - a[[1, 2, 2]], axis=1)
-        dst_edges = np.linalg.norm(b[[0, 0, 1]] - b[[1, 2, 2]], axis=1)
-        if np.any(src_edges < 0.9 * dst_edges) or np.any(dst_edges < 0.9 * src_edges):
-            continue
-
-        T = estimate_rigid_transform(a, b)
-
-        # Verificacao das normais
-        rotated_normals = src_normals[idx] @ T[:3, :3].T
-        if np.any(np.sum(rotated_normals * dst_normals[idx], axis=1) < np.cos(0.52)):
-            continue
-
-        # Pontuacao: soma dos pesos das associacoes que ficam a menos de RANSAC_DISTANCE
-        moved = src @ T[:3, :3].T + T[:3, 3]
-        inliers = np.linalg.norm(moved - dst, axis=1) < RANSAC_DISTANCE
-        score = weights[inliers].sum()
-
-        if score > best_score:
-            best_score, best_T = score, T
-
-            # Numero de iteracoes necessario para a confianca pedida
-            ratio = inliers.mean()
-            if ratio < 1.0:
-                needed = np.log(1.0 - RANSAC_CONFIDENCE) / np.log(1.0 - ratio ** 3)
-            else:
-                needed = 0
-            max_iterations = min(RANSAC_MAX_ITERATIONS, needed)
-
-    return best_T
-
-
-def align_cloud(source, target):
-    # Devolve a transformacao que alinha source com target (RANSAC + ICP)
-    source_down, source_fpfh = preprocess(source)
-    target_down, target_fpfh = preprocess(target)
-
-    # RANSAC com pesos: estimativa inicial a partir das associacoes entre features
-    T_ransac = ransac(source_down, target_down, source_fpfh, target_fpfh)
-    ransac_result = registration.evaluate_registration(source_down, target_down, RANSAC_DISTANCE, T_ransac)
-    print(f"  RANSAC -> fitness: {ransac_result.fitness:.3f} | rmse: {ransac_result.inlier_rmse:.4f}")
-
-    # Normais nas nuvens originais (necessarias para o ICP ponto a plano)
-    for point_cloud in (source, target):
-        point_cloud.estimate_normals(
-            o3d.geometry.KDTreeSearchParamHybrid(radius=NORMAL_RADIUS, max_nn=30)
-        )
-
-    # ICP ponto a plano nas nuvens originais, a partir do resultado do RANSAC
-    icp_result = registration.registration_icp(
-        source, target, ICP_THRESHOLD, T_ransac,
-        registration.TransformationEstimationPointToPlane(),
-        registration.ICPConvergenceCriteria(max_iteration=100),
-    )
-    print(f"  ICP    -> fitness: {icp_result.fitness:.3f} | rmse: {icp_result.inlier_rmse:.4f}")
-    return icp_result.transformation
+AGGREGATE_VOXEL = 0.002   # the aggregated cloud has ~2.4M points; 2 mm keeps the detail and is much faster
 
 
 def main():
-    # Resultados do RANSAC repetiveis entre execucoes
-    # o3d.utility.random.seed(0)
+    parser = argparse.ArgumentParser(description="Estimate the pose and size of boxes on a table")
+    parser.add_argument("--scene", required=True, help="scene folder (point_clouds/, intrinsics.json, ...)")
+    parser.add_argument("--num_boxes", type=int, required=True, help="number of boxes in the scene")
+    parser.add_argument("--registration", choices=["open3d", "custom"], default="open3d",
+                        help="RANSAC used for the initial estimate (custom = Dinis's version)")
+    parser.add_argument("--output", default=None, help="result.json path (default: <scene>/result.json)")
+    parser.add_argument("--show", action="store_true", help="show the intermediate results in 3D windows")
+    args = parser.parse_args()
 
-    # Carregar todas as nuvens da pasta (ordem alfabetica)
-    file_names = sorted(name for name in os.listdir(FOLDER) if name.lower().endswith(".ply"))
-    if len(file_names) == 0:
-        raise FileNotFoundError(f"No point cloud file (.ply) found in {FOLDER}")
-    clouds = [o3d.io.read_point_cloud(os.path.join(FOLDER, name)) for name in file_names]
+    o3d.utility.random.seed(0)
+    ground_truth = evaluation.load_ground_truth(args.scene)
+    start = time.time()
 
-    # Uma cor diferente para cada nuvem. É APLICADO À NUVEM MESMO, NÃO À COPIA
-    for i, cloud in enumerate(clouds):
-        hue = i / len(clouds)
-        cloud.paint_uniform_color(0.5 + 0.4 * np.cos(2 * np.pi * (hue + np.array([0.0, 1 / 3, 2 / 3]))))
+    # -------------------------------------------------------------------------
+    # Part 1 - Registration
+    # -------------------------------------------------------------------------
+    print("Part 1 - registration")
+    names, clouds = registration.load_scene_clouds(args.scene)
+    transforms = registration.register_scene(clouds, names, method=args.registration)
+    aggregated = registration.aggregate(clouds, transforms).voxel_down_sample(AGGREGATE_VOXEL)
+    print(f"  aggregated cloud: {len(aggregated.points)} points ({time.time() - start:.0f} s)")
 
-    # Visualizacao 1: nuvens na orientacao original
-    # draw(clouds, "Orientacao original")
+    if ground_truth:
+        evaluation.print_registration_errors(names, transforms, ground_truth)
+    if args.show:
+        show_registration(clouds, transforms, names, ground_truth)
 
-    # A primeira nuvem e a referencia; cada nova nuvem e alinhada com todas as anteriores
-    aligned_clouds = [o3d.geometry.PointCloud(clouds[0])]
+    # -------------------------------------------------------------------------
+    # Part 2 - Segmentation
+    # -------------------------------------------------------------------------
+    print("\nPart 2 - segmentation")
+    seg = segmentation.segment_objects(aggregated)
+    if len(seg.object_indices) > args.num_boxes:
+        print(f"  keeping the {args.num_boxes} biggest of {len(seg.object_indices)} objects")
+        seg.object_indices = seg.object_indices[:args.num_boxes]
+    elif len(seg.object_indices) < args.num_boxes:
+        print(f"  WARNING: found {len(seg.object_indices)} objects but there are {args.num_boxes} boxes "
+              f"(boxes touching each other form one cluster: level 3)")
 
-    for i in range(1, len(clouds)):
-        print(f"\nA alinhar {file_names[i]}")
+    if ground_truth:
+        # Evaluate only the segmentation: same steps on the cloud aggregated with the TRUE transforms
+        true_transforms = evaluation.true_camera_transforms(ground_truth, names)
+        true_aggregated = registration.aggregate(clouds, true_transforms).voxel_down_sample(AGGREGATE_VOXEL)
+        true_seg = segmentation.segment_objects(true_aggregated, verbose=False)
+        evaluation.print_segmentation_errors(np.asarray(true_aggregated.points), true_seg.object_indices,
+                                             ground_truth)
+    if args.show:
+        show_segmentation(aggregated, seg)
 
-        # Target: todas as nuvens ja alinhadas, juntas numa so
-        target = o3d.geometry.PointCloud()
-        for cloud in aligned_clouds:
-            target += cloud
+    # -------------------------------------------------------------------------
+    # Part 3 - Boxes (base method: bounding box)
+    # -------------------------------------------------------------------------
+    print("\nPart 3 - boxes (bounding box)")
+    boxes = [bounding_box.bounding_box(c, seg.T_camera0_table)
+             for c in bounding_box.object_clouds(aggregated, seg)]
+    for box in boxes:
+        print(f"  {box}")
+    result_boxes = bounding_box.boxes_to_result(boxes, seg.T_camera0_table)
 
-        transformation = align_cloud(clouds[i], target)
+    if ground_truth:
+        evaluation.print_box_errors(result_boxes, ground_truth, seg.T_camera0_table, "Bounding box vs ground truth")
+    if args.show:
+        show_boxes(aggregated, result_boxes, ground_truth)
 
-        aligned = o3d.geometry.PointCloud(clouds[i])
-        aligned.transform(transformation)
-        aligned_clouds.append(aligned)
+    # -------------------------------------------------------------------------
+    # result.json
+    # -------------------------------------------------------------------------
+    result = {
+        "cameras": [{"image": n, "T_camera0_camera": T.tolist()} for n, T in zip(names, transforms)],
+        "boxes": result_boxes,
+    }
+    output = args.output or os.path.join(args.scene, "result.json")
+    with open(output, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"\nWrote {output} ({time.time() - start:.0f} s in total)")
 
-    # Visualizacao 2: todas as nuvens alinhadas
-    draw(aligned_clouds, "Nuvens alinhadas")
+
+# -----------------------------------------------------------------------------
+# Visualization
+# -----------------------------------------------------------------------------
+CAMERA_COLORS = [[0.9, 0.3, 0.3], [0.3, 0.8, 0.3], [0.3, 0.4, 0.9], [0.9, 0.8, 0.2],
+                 [0.8, 0.3, 0.8], [0.2, 0.8, 0.8], [0.9, 0.5, 0.1], [0.5, 0.5, 0.5]]
+
+
+def show_registration(clouds, transforms, names, ground_truth):
+    """Aggregated cloud with one colour per camera; then overlaid with the true aggregation."""
+    coloured = []
+    for k, (cloud, T) in enumerate(zip(clouds, transforms)):
+        c = registration.transformed(cloud.voxel_down_sample(0.01), T)
+        c.paint_uniform_color(CAMERA_COLORS[k % len(CAMERA_COLORS)])
+        coloured.append(c)
+    o3d.visualization.draw_geometries(coloured, window_name="Part 1 - one colour per camera")
+
+    if ground_truth:
+        true_transforms = evaluation.true_camera_transforms(ground_truth, names)
+        estimated = registration.aggregate([c.voxel_down_sample(0.01) for c in clouds], transforms)
+        true = registration.aggregate([c.voxel_down_sample(0.01) for c in clouds], true_transforms)
+        estimated.paint_uniform_color([1, 0.7, 0])
+        true.paint_uniform_color([0, 0.65, 0.93])
+        o3d.visualization.draw_geometries([estimated, true],
+                                          window_name="Part 1 - estimated (orange) vs true (blue)")
+
+
+def show_segmentation(aggregated, seg):
+    background = aggregated.voxel_down_sample(0.01)
+    background.paint_uniform_color([0.7, 0.7, 0.7])
+    objects = []
+    for k, idx in enumerate(seg.object_indices):
+        o = aggregated.select_by_index(idx)
+        o.paint_uniform_color(CAMERA_COLORS[k % len(CAMERA_COLORS)])
+        objects.append(o)
+    frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2)
+    frame.transform(seg.T_camera0_table)
+    o3d.visualization.draw_geometries([background, frame] + objects,
+                                      window_name="Part 2 - objects on the table (table frame shown)")
+
+
+def box_lines(T_camera0_box, length, width, height, color):
+    T = np.array(T_camera0_box)
+    obb = o3d.geometry.OrientedBoundingBox(T[:3, 3], T[:3, :3], [length, width, height])
+    lines = o3d.geometry.LineSet.create_from_oriented_bounding_box(obb)
+    lines.paint_uniform_color(color)
+    return lines
+
+
+def show_boxes(aggregated, result_boxes, ground_truth):
+    geometries = [aggregated]
+    geometries += [box_lines(b["T_camera0_box"], b["length"], b["width"], b["height"], [0, 0.8, 0])
+                   for b in result_boxes]
+    if ground_truth:
+        geometries += [box_lines(b["T_camera0_box"], b["length"], b["width"], b["height"], [1, 0, 0])
+                       for b in ground_truth["boxes"]]
+    o3d.visualization.draw_geometries(geometries, window_name="Part 3 - estimated (green) vs true (red)")
 
 
 if __name__ == "__main__":
