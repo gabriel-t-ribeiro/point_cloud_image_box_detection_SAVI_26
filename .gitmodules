@@ -1,3 +1,4 @@
 [submodule "SAVI_26-27"]
 	path = SAVI_26-27
 	url = https://github.com/gabriel-t-ribeiro/SAVI_26-27.git
+	ignore = dirty
