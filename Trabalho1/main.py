@@ -13,6 +13,7 @@ Steps:
             (the optimization method is still to do)
     evaluation.py compares with ground_truth.json when the scene has it.
 Writes result.json (default: inside the scene folder).
+See the README.md at the top of the repository for the full tutorial.
 """
 
 import argparse
@@ -32,7 +33,8 @@ AGGREGATE_VOXEL = 0.002   # the aggregated cloud has ~2.4M points; 2 mm keeps th
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Estimate the pose and size of boxes on a table")
+    # description=__doc__ makes --help also show the examples and steps above
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scene", required=True, help="scene folder (point_clouds/, intrinsics.json, ...)")
     parser.add_argument("--num_boxes", type=int, required=True, help="number of boxes in the scene")
     parser.add_argument("--registration", choices=["open3d", "custom"], default="open3d",
