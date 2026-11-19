@@ -9,4 +9,4 @@ explain every part of the code and change it live. So:
 - After each change, tell us how to test it and what result to expect.
 - When there are several ways to do something, list them with pros/cons and let us choose.
 - Point out which parameters we should experiment with ourselves.
-- Our code goes in `Trabalho1/`. Do not edit `SAVI_26-27/` (professor's material).
+- Our code goes in `gw`. Do not edit `SAVI_26-27/` (professor's material).

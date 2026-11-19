@@ -2,5 +2,5 @@
 /.idea
 
 # Scenes generated with the simulator (~40 MB each); regenerate them from the configs
-Trabalho1/scenes/
+gw/scenes/
 __pycache__/

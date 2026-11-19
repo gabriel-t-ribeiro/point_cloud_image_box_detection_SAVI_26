@@ -37,19 +37,19 @@ git submodule update --init
 ### 2. Install the Python packages
 
 ```bash
-pip install -r Trabalho1/requirements.txt
+pip install -r gw/requirements.txt
 ```
 
 (Python 3.10+; a virtual environment is recommended: `python3 -m venv .venv && source .venv/bin/activate`.)
 
 ### 3. Generate test scenes with the professor's simulator
 
-The scenes are about 40 MB each, so they are not in git. Generate them into `Trabalho1/scenes`:
+The scenes are about 40 MB each, so they are not in git. Generate them into `gw`:
 
 ```bash
-cd SAVI_26-27/Trabalho1/simulator
-./savi_box_simulator.py --batch configs/level_1.json configs/level_2.json --output ../../../Trabalho1/scenes
-cd ../../../Trabalho1
+cd SAVI_26-27/gw/simulator
+./savi_box_simulator.py --batch configs/level_1.json configs/level_2.json --output ../../../gw/scenes
+cd ../../../gw
 ```
 
 - `configs/` has one example per level (`level_1`, `level_2`, `level_3_*`, `level_4`); `--batch configs/level_*.json` makes all of them.
@@ -60,7 +60,7 @@ Each scene folder has `point_clouds/000.ply ...`, `rgb/`, `intrinsics.json`, `co
 
 ### 4. Run
 
-From inside `Trabalho1/`:
+From inside `gw`:
 
 ```bash
 ./main.py --scene scenes/level_1 --num_boxes 1
@@ -118,4 +118,4 @@ git commit -am "Update professor's material"
 git push
 ```
 
-Never commit changes inside `SAVI_26-27/`; copy a file into `Trabalho1/` if you want to change it.
+Never commit changes inside `SAVI_26-27/`; copy a file into `gw` if you want to change it.

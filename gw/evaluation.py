@@ -125,7 +125,7 @@ def box_errors(est, true):
         yaw_true = true[3] + (np.pi / 2 if swap else 0.0)
         yaw_err = (est[3] - yaw_true + np.pi / 2) % np.pi - np.pi / 2   # modulo 180 deg
         candidate = (np.degrees(yaw_err), (est[4] - length), (est[5] - width))
-        if best is None or candidate[0] < best[0]:
+        if best is None or abs(candidate[0]) < abs(best[0]):
             best = candidate
     return {"position_mm": np.linalg.norm(centre_est - centre_true) * 1000,
             "z_mm": (est[2] - true[2]) * 1000,

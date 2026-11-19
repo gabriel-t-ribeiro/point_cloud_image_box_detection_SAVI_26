@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SAVIBoxes - Trabalho 1.
 
-Usage (from inside Trabalho1/):
+Usage (from inside gw/):
     ./main.py --scene scenes/level_1 --num_boxes 1
     ./main.py --scene scenes/level_2 --num_boxes 3 --show            # open the 3D windows
     ./main.py --scene scenes/level_1 --num_boxes 1 --registration custom   # Dinis's RANSAC

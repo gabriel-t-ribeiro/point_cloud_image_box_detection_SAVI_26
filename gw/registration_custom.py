@@ -1,4 +1,4 @@
-"""Dinis's hand-written RANSAC (from the first Trabalho1/main.py), kept for comparison
+"""Dinis's hand-written RANSAC (from the first gw/main.py), kept for comparison
 with Open3D's registration_ransac_based_on_feature_matching.
 
 Run it with:  ./main.py --scene scenes/level_1 --num_boxes 1 --registration custom
