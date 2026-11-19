@@ -1,0 +1,52 @@
+Part 1 - registration
+  001: RANSAC fitness 0.336 (2 different answers) | ICP fitness 0.230 rmse 6.1 mm
+  002: RANSAC fitness 0.414 (1 different answers) | ICP fitness 0.363 rmse 6.1 mm
+  003: RANSAC fitness 0.350 (1 different answers) | ICP fitness 0.351 rmse 5.9 mm
+  004: RANSAC fitness 0.398 (1 different answers) | ICP fitness 0.296 rmse 6.0 mm
+  005: RANSAC fitness 0.463 (1 different answers) | ICP fitness 0.368 rmse 6.1 mm
+  006: RANSAC fitness 0.468 (2 different answers) | ICP fitness 0.528 rmse 5.8 mm
+  007: RANSAC fitness 0.366 (5 different answers) | ICP fitness 0.423 rmse 6.3 mm
+  refinement pass 1 done
+  aggregated cloud: 2143565 points (66 s)
+
+  Registration errors vs ground truth
+  image | translation (mm) | rotation (deg)
+    000 |             0.00 |          0.000
+    001 |             5.82 |          0.347
+    002 |             8.45 |          0.463
+    003 |            10.30 |          0.502
+    004 |            13.10 |          0.576
+    005 |            13.00 |          0.643
+    006 |            17.54 |          0.713
+    007 |           891.67 |          0.493
+   mean |           119.99 |          0.467
+
+Part 2 - segmentation
+  table plane: 4 horizontal candidates, chosen one at 1.45 m from camera 0 with 38416 inliers
+  table 2.13 x 0.83 m, 115748 points above it, 2 objects: [98633, 16589] points
+
+  Segmentation: found 1 objects, ground truth has 2 boxes
+  object | points | box | precision | recall
+       0 | 108179 |   0 |     0.671 |  0.951
+
+Part 3 - boxes (bounding box)
+  Box(x=0.557, y=-0.003, z=0.000, yaw=-0.2 deg, 0.298 x 0.199 x 0.300)
+  Box(x=-0.349, y=0.002, z=0.000, yaw=-0.2 deg, 0.284 x 0.191 x 0.300)
+
+  Bounding Box Errors
+  box | IoU   | pos (mm) | z (mm) | yaw (deg) | length (mm) | width (mm) | height (mm)
+    1 | 0.653 |     50.0 |   -0.1 |     -0.49 |        -1.6 |       -0.6 |      +100.1
+    1 | 0.000 | not found
+  mean IoU: 0.326
+
+Part 3 - boxes (optimization)
+  Box(x=0.558, y=-0.003, z=0.000, yaw=-0.4 deg, 0.294 x 0.196 x 0.296)
+  Box(x=-0.345, y=0.003, z=0.000, yaw=-0.3 deg, 0.285 x 0.188 x 0.299)
+
+  Optimization Errors
+  box | IoU   | pos (mm) | z (mm) | yaw (deg) | length (mm) | width (mm) | height (mm)
+    1 | 0.654 |     48.1 |   -0.1 |     -0.64 |        -5.8 |       -3.7 |       +96.3
+    1 | 0.000 | not found
+  mean IoU: 0.327
+
+Wrote /private/tmp/claude-501/-Users-gabrielribeiro-Documents-GitHub-SAVI-1st-project/a03b29c9-b518-44bd-836e-9bbef64e5967/scratchpad/out2/before_level_3_stacked.json (75 s in total)

@@ -1,0 +1,5 @@
+{
+  "base": "../../SAVI_26-27/Trabalho1/simulator/configs/base.json",
+  "name": "level_0_empty",
+  "boxes": []
+}

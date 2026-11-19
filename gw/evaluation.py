@@ -149,7 +149,7 @@ def print_box_errors(result_boxes, ground_truth, T_camera0_table, title):
     for k, true in enumerate(trues):
         options = [(iou_3d(e, true), j) for j, e in enumerate(ests) if j not in used]
         if not options or max(options)[0] == 0:
-            print(f"  {k:3d} | 0.000 | not found")
+            print(f"  {k+1:3d} | 0.000 | not found")
             ious.append(0.0)
             continue
         iou, j = max(options)

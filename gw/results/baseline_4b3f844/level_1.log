@@ -1,0 +1,48 @@
+Part 1 - registration
+  001: RANSAC fitness 0.341 (3 different answers) | ICP fitness 0.246 rmse 6.2 mm
+  002: RANSAC fitness 0.509 (2 different answers) | ICP fitness 0.389 rmse 6.1 mm
+  003: RANSAC fitness 0.395 (1 different answers) | ICP fitness 0.360 rmse 5.9 mm
+  004: RANSAC fitness 0.518 (3 different answers) | ICP fitness 0.352 rmse 5.9 mm
+  005: RANSAC fitness 0.356 (4 different answers) | ICP fitness 0.324 rmse 5.7 mm
+  006: RANSAC fitness 0.463 (1 different answers) | ICP fitness 0.437 rmse 5.9 mm
+  007: RANSAC fitness 0.410 (5 different answers) | ICP fitness 0.611 rmse 6.4 mm
+  refinement pass 1 done
+  aggregated cloud: 2072325 points (82 s)
+
+  Registration errors vs ground truth
+  image | translation (mm) | rotation (deg)
+    000 |             0.00 |          0.000
+    001 |             3.04 |          0.268
+    002 |             6.40 |          0.305
+    003 |             9.62 |          0.330
+    004 |            13.89 |          0.404
+    005 |             8.77 |          0.399
+    006 |             4.15 |          0.313
+    007 |             1.45 |          0.038
+   mean |             5.91 |          0.257
+
+Part 2 - segmentation
+  table plane: 3 horizontal candidates, chosen one at 1.53 m from camera 0 with 26074 inliers
+  table 1.23 x 0.87 m, 72279 points above it, 1 objects: [71559] points
+
+  Segmentation: found 1 objects, ground truth has 1 boxes
+  object | points | box | precision | recall
+       0 |  70248 |   0 |     0.998 |  0.945
+
+Part 3 - boxes (bounding box)
+  Box(x=0.026, y=-0.022, z=0.000, yaw=19.9 deg, 0.300 x 0.205 x 0.150)
+
+  Bounding Box Errors
+  box | IoU   | pos (mm) | z (mm) | yaw (deg) | length (mm) | width (mm) | height (mm)
+    1 | 0.970 |      2.6 |   -0.0 |     -0.29 |        -0.1 |       +4.9 |        +0.1
+  mean IoU: 0.970
+
+Part 3 - boxes (optimization)
+  Box(x=0.026, y=-0.022, z=0.000, yaw=20.0 deg, 0.300 x 0.205 x 0.150)
+
+  Optimization Errors
+  box | IoU   | pos (mm) | z (mm) | yaw (deg) | length (mm) | width (mm) | height (mm)
+    1 | 0.971 |      2.5 |   -0.0 |     -0.24 |        -0.0 |       +4.9 |        +0.1
+  mean IoU: 0.971
+
+Wrote /private/tmp/claude-501/-Users-gabrielribeiro-Documents-GitHub-SAVI-1st-project/a03b29c9-b518-44bd-836e-9bbef64e5967/scratchpad/out2/before_level_1.json (90 s in total)

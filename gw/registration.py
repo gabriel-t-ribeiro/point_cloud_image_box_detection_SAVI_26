@@ -8,6 +8,7 @@ Pipeline for each camera i (i = 1, 2, ...):
   2. Initial estimate: RANSAC over FPFH matches between camera i and its neighbour
      i-1 (neighbours overlap the most), chained with the pose of i-1:
          T_camera0_camera_i = T_camera0_camera_(i-1) @ T_(i-1)_i
+     The last camera is also RANSAC-matched against camera 000 (it closes the ring).
   3. Refine with point-to-plane ICP, coarse threshold first and then fine
      (two ICP passes improved our Part 8 results a lot). The ICP target is ALL the
      clouds already aligned, merged together, not only i-1. So the error of the
@@ -44,7 +45,7 @@ ICP_ROBUST_KERNEL = 0.0       # Tukey loss scale (m) in ICP; 0 = plain least squ
 MAX_DEPTH = 0.0               # drop points farther than this from the camera (m); 0 = keep all
 OUTLIER_NEIGHBOURS = 0        # statistical outlier removal (flying pixels); 0 = off
 OUTLIER_STD = 2.0
-REFINEMENT_PASSES = 1         # extra passes: each camera re-aligned against ALL the others (0 = off)
+REFINEMENT_PASSES = 3         # extra passes: each camera (000 too) re-aligned against ALL the others (0 = off)
 
 
 # ---------------------------------------------------------------------------
@@ -190,24 +191,32 @@ def register_scene(clouds, names, method="open3d", verbose=True):
     aligned_icp = [icp_clouds[0]]
 
     for i in range(1, len(clouds)):
-        # Initial estimates: RANSAC between neighbours i -> i-1, chained to camera 0
-        candidates = ransac_candidates(global_registration, features_clouds[i], features_clouds[i - 1],
-                                       features[i], features[i - 1])
+        # Initial estimates: RANSAC between neighbours i -> j, chained to camera 0 (T_camera0_j @ T_j_i).
+        # j = i-1 for every camera. The LAST camera is also next to camera 000 (the ring closes),
+        # so it gets RANSAC candidates against 000 too: in level_3_stacked, RANSAC 007 -> 006 gave
+        # only wrong answers (~1 m slides) while 007 -> 000 was right every time.
+        neighbours = [i - 1]
+        if i == len(clouds) - 1 and i - 1 != 0:
+            neighbours.append(0)
+        candidates = [(j, T_j_i) for j in neighbours
+                      for T_j_i in ransac_candidates(global_registration, features_clouds[i], features_clouds[j],
+                                                     features[i], features[j])]
 
         # Refinement: ICP against every cloud already aligned (normals are rotated by transform()).
         # If RANSAC gave more than one answer, keep the one with the best ICP fitness.
         target_icp = merge(aligned_icp)
         best = None
-        for T_previous_current in candidates:
-            T, icp_result = refine_icp(icp_clouds[i], target_icp, transforms[i - 1] @ T_previous_current)
+        for j, T_j_i in candidates:
+            T, icp_result = refine_icp(icp_clouds[i], target_icp, transforms[j] @ T_j_i)
             if best is None or icp_result.fitness > best[1].fitness:
-                best = (T, icp_result, T_previous_current)
-        T, icp_result, T_previous_current = best
+                best = (T, icp_result, j, T_j_i)
+        T, icp_result, j, T_j_i = best
 
         if verbose:
             ransac_eval = registration.evaluate_registration(
-                features_clouds[i], features_clouds[i - 1], RANSAC_DISTANCE, T_previous_current)
-            print(f"  {names[i]}: RANSAC fitness {ransac_eval.fitness:.3f} ({len(candidates)} different answers) | "
+                features_clouds[i], features_clouds[j], RANSAC_DISTANCE, T_j_i)
+            print(f"  {names[i]}: RANSAC fitness {ransac_eval.fitness:.3f} ({len(candidates)} different answers, "
+                  f"best from {names[j]}) | "
                   f"ICP fitness {icp_result.fitness:.3f} rmse {icp_result.inlier_rmse * 1000:.1f} mm")
 
         transforms.append(T)
@@ -216,11 +225,18 @@ def register_scene(clouds, names, method="open3d", verbose=True):
     # Extra passes: now that every cloud is roughly in place, re-align each camera
     # against all the OTHER clouds (including the ones after it, e.g. 007 next to 000).
     # This closes the loop around the table and spreads out the drift of the chain.
+    # Camera 000 is re-aligned too: if it stays fixed, cameras 1-7 agree with each other
+    # but the whole group ends up ~0.4 deg rotated with respect to 000 (error grows with
+    # the distance to camera 000, ~14 mm on the opposite side). Afterwards every pose is
+    # re-expressed in the new camera-000 frame, T_i <- inv(T_0) @ T_i, so T_0 is the identity again.
     for refinement in range(REFINEMENT_PASSES):
-        for i in range(1, len(clouds)):
+        for i in range(len(clouds)):
             others = merge([c for k, c in enumerate(aligned_icp) if k != i])
             transforms[i], icp_result = refine_icp(icp_clouds[i], others, transforms[i])
             aligned_icp[i] = transformed(icp_clouds[i], transforms[i])
+        T0_inv = np.linalg.inv(transforms[0])
+        transforms = [T0_inv @ T for T in transforms]
+        aligned_icp = [transformed(c, T) for c, T in zip(icp_clouds, transforms)]
         if verbose:
             print(f"  refinement pass {refinement + 1} done")
 

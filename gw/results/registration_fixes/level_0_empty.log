@@ -1,0 +1,45 @@
+Part 1 - registration
+  001: RANSAC fitness 0.332 (3 different answers, best from 000) | ICP fitness 0.259 rmse 6.1 mm
+  002: RANSAC fitness 0.508 (2 different answers, best from 001) | ICP fitness 0.396 rmse 6.0 mm
+  003: RANSAC fitness 0.387 (3 different answers, best from 002) | ICP fitness 0.367 rmse 5.8 mm
+  004: RANSAC fitness 0.520 (1 different answers, best from 003) | ICP fitness 0.352 rmse 5.9 mm
+  005: RANSAC fitness 0.364 (4 different answers, best from 004) | ICP fitness 0.327 rmse 5.6 mm
+  006: RANSAC fitness 0.469 (3 different answers, best from 005) | ICP fitness 0.440 rmse 5.9 mm
+  007: RANSAC fitness 0.410 (8 different answers, best from 006) | ICP fitness 0.585 rmse 6.4 mm
+  refinement pass 1 done
+  refinement pass 2 done
+  refinement pass 3 done
+  aggregated cloud: 2050511 points (142 s)
+
+  Registration errors vs ground truth
+  image | translation (mm) | rotation (deg)
+    000 |             0.00 |          0.000
+    001 |             5.22 |          0.153
+    002 |             8.17 |          0.154
+    003 |             9.48 |          0.295
+    004 |            12.26 |          0.423
+    005 |             5.44 |          0.391
+    006 |             6.36 |          0.278
+    007 |             1.93 |          0.030
+   mean |             6.11 |          0.215
+
+Part 2 - segmentation
+  table plane: 3 horizontal candidates, chosen one at 1.52 m from camera 0 with 29449 inliers
+  table 1.24 x 0.84 m, 1 points above it, 0 objects: [] points
+
+  Segmentation: found 0 objects, ground truth has 0 boxes
+  object | points | box | precision | recall
+
+Part 3 - boxes (bounding box)
+
+  Bounding Box Errors
+  box | IoU   | pos (mm) | z (mm) | yaw (deg) | length (mm) | width (mm) | height (mm)
+  no boxes in the ground truth
+
+Part 3 - boxes (optimization)
+
+  Optimization Errors
+  box | IoU   | pos (mm) | z (mm) | yaw (deg) | length (mm) | width (mm) | height (mm)
+  no boxes in the ground truth
+
+Wrote /private/tmp/claude-501/-Users-gabrielribeiro-Documents-GitHub-SAVI-1st-project/a03b29c9-b518-44bd-836e-9bbef64e5967/scratchpad/out2/after_level_0_empty.json (149 s in total)
