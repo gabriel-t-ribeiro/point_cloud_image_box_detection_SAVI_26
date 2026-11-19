@@ -293,8 +293,13 @@ def _fit_boxes(
     max_nfev: int | None = None,
     assignment: np.ndarray | None = None,
     colour_dist: np.ndarray | None = None,
+    on_iteration=None,
+    stage: str = "",
 ) -> tuple[list[Box], float]:
     """Run joint nonlinear least-squares on `boxes` in the table frame.
+
+    on_iteration(boxes_params (K, 7), cost, stage) is called after every accepted iteration
+    (least_squares callback), e.g. to draw the boxes while they move.
 
     Point -> box association, recomputed in every evaluation unless fixed:
       - default:            the box whose surface is closest (geometry only);
@@ -347,6 +352,16 @@ def _fit_boxes(
             ))
         return np.concatenate(parts)
 
+    # Called once per accepted iteration, not per objective call: with finite differences the
+    # objective is also called 7K times per Jacobian with tiny parameter nudges, not worth drawing.
+    # (scipy passes the OptimizeResult because the argument is named intermediate_result.)
+    def callback(intermediate_result):
+        on_iteration(intermediate_result.x.reshape(k, 7), float(intermediate_result.cost), stage)
+
+    if on_iteration is not None:   # initial state, with the same robust cost least_squares reports
+        z = (residuals(x0) / f_scale) ** 2   # soft_l1: rho(z) = 2 (sqrt(1 + z) - 1), cost = 0.5 f^2 sum(rho)
+        on_iteration(x0.reshape(k, 7), float(0.5 * f_scale ** 2 * np.sum(2.0 * (np.sqrt(1.0 + z) - 1.0))),
+                     stage + " (start)")
     res = least_squares(
         residuals,
         x0,
@@ -354,6 +369,7 @@ def _fit_boxes(
         loss="soft_l1",
         f_scale=f_scale,
         max_nfev=max_nfev,
+        callback=callback if on_iteration is not None else None,
     )
     return _unpack_boxes(res.x, k), float(res.cost)
 
@@ -423,8 +439,12 @@ def optimize_boxes(
     association: str = "geometric",
     point_colours: np.ndarray | None = None,
     assignment: np.ndarray | None = None,
+    on_iteration=None,
 ) -> list[Box]:
     """Refine box poses and dimensions in the table frame using least_squares.
+
+    on_iteration(boxes_params (K, 7) in the table frame, cost, stage): called after every
+    iteration of every fit (initial fit, each split candidate, final fit), for visualization.
 
     If `num_boxes` is greater than `len(initial_boxes)` (merged clusters of touching
     boxes), iteratively splits/peels until `num_boxes` boxes are fitted jointly.
@@ -447,7 +467,8 @@ def optimize_boxes(
         if assignment is None or len(boxes) != target_boxes:
             raise ValueError("association='fixed' needs one initial box per colour group and their assignment")
         fitted_boxes, _ = _fit_boxes(points_table, boxes, f_scale, size_reg_xy, overlap_weight,
-                                     assignment=np.asarray(assignment))
+                                     assignment=np.asarray(assignment), on_iteration=on_iteration,
+                                     stage="final fit (fixed colour association)")
         return fitted_boxes
 
     if len(boxes) == 0:
@@ -460,13 +481,16 @@ def optimize_boxes(
         else:
             pts_search = points_table
 
-        boxes, _ = _fit_boxes(pts_search, boxes, f_scale, size_reg_xy, overlap_weight, max_nfev=SEARCH_MAX_NFEV)
+        boxes, _ = _fit_boxes(pts_search, boxes, f_scale, size_reg_xy, overlap_weight, max_nfev=SEARCH_MAX_NFEV,
+                              on_iteration=on_iteration, stage=f"search: fit {len(boxes)} box(es)")
         while len(boxes) < target_boxes:
             candidates = _propose_split_candidates(pts_search, boxes)
             best_boxes, best_cost = None, np.inf
-            for cand in candidates:
+            for c, cand in enumerate(candidates):
                 fitted, cost = _fit_boxes(
-                    pts_search, cand, f_scale, size_reg_xy, overlap_weight, max_nfev=SEARCH_MAX_NFEV
+                    pts_search, cand, f_scale, size_reg_xy, overlap_weight, max_nfev=SEARCH_MAX_NFEV,
+                    on_iteration=on_iteration,
+                    stage=f"search: {len(cand)} boxes, candidate {c + 1}/{len(candidates)}",
                 )
                 if cost < best_cost:
                     best_cost, best_boxes = cost, fitted
@@ -476,7 +500,7 @@ def optimize_boxes(
     if association == "colour" and point_colours is not None:
         colour_dist = _colour_distances(points_table, point_colours, boxes)
     fitted_boxes, _ = _fit_boxes(points_table, boxes, f_scale, size_reg_xy, overlap_weight,
-                                 colour_dist=colour_dist)
+                                 colour_dist=colour_dist, on_iteration=on_iteration, stage="final fit")
     return fitted_boxes
 
 

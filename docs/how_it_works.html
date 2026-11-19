@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SAVIBoxes — How our pipeline works</title>
+  <meta name="description" content="SAVI Trabalho 1: registration, photometric correction, segmentation, bounding boxes and least-squares box fitting, step by step with measured results." />
+  <script>
+    window.MathJax = { tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]] } };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --surface-alt: #f1f5f9;
+      --border: #cbd5e1;
+      --fg: #0f172a;
+      --muted: #475569;
+      --primary: #2563eb;
+      --success: #059669;
+      --error: #dc2626;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1120;
+        --surface: #111827;
+        --surface-alt: #1e293b;
+        --border: #334155;
+        --fg: #f1f5f9;
+        --muted: #94a3b8;
+        --primary: #60a5fa;
+        --success: #34d399;
+        --error: #f87171;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.55;
+    }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+    header { margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+    h1 { margin: 0 0 0.4rem; font-size: clamp(1.4rem, 2.5vw, 1.9rem); letter-spacing: -0.02em; }
+    h2 { margin: 2.2rem 0 0.6rem; font-size: 1.35rem; letter-spacing: -0.01em; }
+    h3 { margin: 1.5rem 0 0.5rem; font-size: 1.08rem; }
+    .subtitle { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    nav { margin-top: 0.75rem; font-size: 0.9rem; display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; }
+    a { color: var(--primary); }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.2rem; margin: 1rem 0; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.86em; }
+    code { background: var(--surface-alt); padding: 0.1em 0.35em; border-radius: 4px; }
+    pre { background: var(--surface-alt); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem 1rem; overflow-x: auto; line-height: 1.45; }
+    pre code { background: none; padding: 0; }
+    .table-wrap { overflow-x: auto; margin: 0.8rem 0; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.88rem; background: var(--surface); }
+    th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+    th { background: var(--surface-alt); font-weight: 600; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .best { color: var(--success); font-weight: 600; }
+    .bad { color: var(--error); }
+    figure { margin: 1rem 0; }
+    figure img { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+    figcaption { font-size: 0.85rem; color: var(--muted); margin-top: 0.3rem; }
+    .figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.8rem; }
+    .note { font-size: 0.88rem; color: var(--muted); }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.25rem 0; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>SAVIBoxes — How our pipeline works</h1>
+      <p class="subtitle">What <code>gw/main.py</code> does, step by step, with the numbers we measured on the simulator scenes.</p>
+      <nav>
+        <a href="index.html">← Point-to-surface distance visualizer</a>
+        <a href="#part1">Registration</a>
+        <a href="#photometry">Photometric correction</a>
+        <a href="#part2">Segmentation</a>
+        <a href="#bbox">Bounding boxes</a>
+        <a href="#optimization">Least-squares fit</a>
+      </nav>
+    </header>
+
+<pre><code>8 RGB-D point clouds
+  │
+  ├─ Part 1   registration.py   every camera aligned with camera 000
+  ├─ Extra    photometry.py     every image's colours corrected to image 000
+  ├─ Part 2   segmentation.py   table, objects on it, split by colour when needed
+  └─ Part 3   bounding_box.py   base method: one box per object
+              optimization.py   main method: least-squares fit of all the boxes
+                                 → result.json</code></pre>
+
+    <h2 id="commands">Commands</h2>
+<pre><code>cd gw
+./main.py --scene scenes/level_4 --num_boxes 3                     # normal run, writes result.json
+./main.py --scene scenes/level_4 --num_boxes 3 --show              # all the 3D windows
+./main.py --scene scenes/level_3_heights --num_boxes 2 --show_optimization   # boxes moving + cost plot
+./main.py --scene scenes/level_1 --num_boxes 1 --bbox open3d       # base method as in the assignment
+./main.py --scene scenes/level_1 --num_boxes 1 --bbox open3d_minimal
+./main.py --scene scenes/level_4_exposure --num_boxes 3 --no_photometric   # without the colour correction</code></pre>
+
+    <h2 id="part1">Part 1 — Registration</h2>
+    <p>Every point cloud is in the frame of the camera that took it. For each camera $i$ we look for $T_{0,i}$ (camera $i$ → camera 000):</p>
+    <ol>
+      <li><strong>Initial estimate:</strong> FPFH features + RANSAC between camera $i$ and its neighbour $i-1$ (they overlap the most), chained: $T_{0,i} = T_{0,i-1}\,T_{i-1,i}$. RANSAC runs 5 times and every different answer is kept as a candidate. The <strong>last camera is also matched against camera 000</strong>, because the ring of cameras closes there.</li>
+      <li><strong>Refinement:</strong> point-to-plane ICP, coarse (4 cm) then fine (1 cm), against <em>all</em> the clouds already aligned. The candidate with the best ICP fitness wins.</li>
+      <li><strong>Refinement passes (3):</strong> every camera, <strong>camera 000 included</strong>, is aligned again against all the others; then every pose is re-expressed in the new camera-000 frame, $T_i \leftarrow T_0^{-1} T_i$.</li>
+    </ol>
+    <p>Why the two fixes: in two scenes RANSAC 007 → 006 only gave wrong answers (~1 m slides) while 007 → 000 was right every time; and when camera 000 never moved, cameras 1–7 agreed with each other but the whole group stayed ~0.4° rotated with respect to 000 (the error grew with the distance to camera 000).</p>
+    <div class="table-wrap"><table>
+      <tr><th>Scene</th><th>Before the fixes</th><th>Now</th></tr>
+      <tr><td>level_1</td><td>5.9 mm / 0.26°</td><td class="best">3.1 mm / 0.10°</td></tr>
+      <tr><td>level_2</td><td>7.1 mm / 0.40°</td><td class="best">3.0 mm / 0.16°</td></tr>
+      <tr><td>level_3_heights</td><td class="bad">100 mm (camera 007 lost)</td><td class="best">3.6 mm / 0.13°</td></tr>
+      <tr><td>level_3_stacked</td><td class="bad">120 mm (camera 007 lost)</td><td class="best">4.4 mm / 0.19°</td></tr>
+      <tr><td>level_4</td><td>8.3 mm / 0.36°</td><td class="best">2.7 mm / 0.08°</td></tr>
+    </table></div>
+    <p class="note">Mean over the cameras, against the ground truth.</p>
+
+    <h2 id="photometry">Extra — Photometric correction</h2>
+    <p>With automatic exposure (simulator option <code>--exposure_changes</code>) every image has its own gain and bias, the same for R, G and B: $c_i = s_i\,c + b_i$. The same box looks brighter in one image and darker in another, so the colours of the aggregated cloud disagree.</p>
+    <p>We estimate every image <strong>relative to image 000</strong>: $c_i = s_{i0}\,c_0 + b_{i0}$, with $s_{i0} = s_i / s_0$ and $b_{i0} = b_i - s_{i0}\,b_0$, and correct it with $\hat c_i = (c_i - b_{i0}) / s_{i0}$.</p>
+    <ul>
+      <li><strong>Data:</strong> after the registration, two points of different cameras closer than 5 mm are the same surface (10 mm voxels, up to 3000 pairs per camera pair).</li>
+      <li><strong>Residual</strong> (one per pair and channel), image $j$ mapped into image $i$ and compared in image $i$'s raw colours: $\;c_i - \big[\tfrac{s_{i0}}{s_{j0}}(c_j - b_{j0}) + b_{i0}\big]$. Comparing the corrected colours instead, $(c_i - b_i)/s_i - (c_j - b_j)/s_j$, rewards a bigger $s$ (dividing by $s$ shrinks every difference): it gave $s \approx 1.03$ on a scene with no exposure changes at all.</li>
+      <li><strong>Image 000 fixed</strong> at $s = 1, b = 0$: with every image free the solution is not unique (Parte 06, ex. 2).</li>
+      <li>Colours near 0 or 1 (clipped by the camera) are left out; <code>soft_l1</code> for the pairs on colour edges.</li>
+    </ul>
+    <p>It runs by default (about 1.5 s); on scenes without exposure changes it estimates $s \approx 1$, $b \approx 0$ and changes nothing.</p>
+    <div class="table-wrap"><table>
+      <tr><th>image</th><th class="num">s (ours)</th><th class="num">s (true)</th><th class="num">b (ours)</th><th class="num">b (true)</th></tr>
+      <tr><td>001</td><td class="num">1.025</td><td class="num">1.027</td><td class="num">+0.017</td><td class="num">+0.016</td></tr>
+      <tr><td>002</td><td class="num">0.779</td><td class="num">0.779</td><td class="num">+0.009</td><td class="num">+0.007</td></tr>
+      <tr><td>003</td><td class="num">0.933</td><td class="num">0.935</td><td class="num">−0.022</td><td class="num">−0.024</td></tr>
+      <tr><td>004</td><td class="num">0.917</td><td class="num">0.921</td><td class="num">−0.081</td><td class="num">−0.084</td></tr>
+      <tr><td>005</td><td class="num">0.979</td><td class="num">0.983</td><td class="num">−0.043</td><td class="num">−0.047</td></tr>
+      <tr><td>006</td><td class="num">0.968</td><td class="num">0.973</td><td class="num">−0.045</td><td class="num">−0.049</td></tr>
+      <tr><td>007</td><td class="num">1.129</td><td class="num">1.179</td><td class="num">+0.061</td><td class="num">+0.044</td></tr>
+    </table></div>
+    <p class="note">level_4 with exposure changes, full pipeline. Image 007 only overlaps images 006 and 000 on surfaces with a narrow range of colours; there a bigger $s$ with a smaller $b$ predicts almost the same colours (the two lines cross at $c \approx 0.33$), so $s$ and $b$ cannot be separated well, although the corrected colours are right.</p>
+    <div class="table-wrap"><table>
+      <tr><th>level_4 with exposure changes</th><th>Points with no clear colour</th><th>Segmentation recall (3 boxes)</th><th>Optimization IoU</th></tr>
+      <tr><td>without correction</td><td class="bad">16.0 %</td><td>0.70 / 0.91 / 0.80</td><td class="num">0.953</td></tr>
+      <tr><td>with correction</td><td class="best">2.9 %</td><td class="best">0.92 / 0.91 / 0.91</td><td class="num">0.957</td></tr>
+    </table></div>
+    <p class="note">The IoU hardly changes because the colour split uses chromaticity (which ignores the gain) and the optimization weighs colour weakly; the correction mostly gives the segmentation its points back.</p>
+
+    <h2 id="part2">Part 2 — Segmentation</h2>
+    <ol>
+      <li><strong>Table plane:</strong> RANSAC (<code>segment_plane</code>) finds several planes; the table is the horizontal one, big enough not to be a box top, that the optical axis of camera 000 hits first (the floor is behind it). The plane is refitted a few times by least squares (SVD) on the biggest cluster of its inliers.</li>
+      <li><strong>Table frame:</strong> origin at the centre of the table top, z up, x along the long side (<code>cv2.minAreaRect</code>).</li>
+      <li><strong>Crop:</strong> points more than 8 mm above the table and inside its limits.</li>
+      <li><strong>Euclidean clustering:</strong> DBSCAN (<code>cluster_dbscan</code>, eps 1.5 cm).</li>
+      <li><strong>Colour split (level 4):</strong> touching boxes of different colours form one cluster. In chromaticity $(r, g) = (R, G)/(R+G+B)$, which removes the brightness (top and sides of a box are lit differently), each colour is a peak of the 2D histogram. Real colours hold 2–9 % of the cluster's points in their peak bin, the mixed colours at the seams 0.01 %, so a 0.3 % threshold separates them. Every point takes the nearest peak (if closer than 0.06) and each colour group is clustered again. A cluster with one colour is left as it is, so levels 1–3 do not change.</li>
+    </ol>
+
+    <h2 id="bbox">Part 3 — Base method: bounding boxes</h2>
+    <p>The assignment asks for a base method to compare against: "how far we get without the optimization". We have two, chosen with <code>--bbox</code>.</p>
+
+    <div class="card">
+      <h3 style="margin-top:0">The assignment's: Open3D oriented bounding box <span class="note">(<code>--bbox open3d</code>, <code>--bbox open3d_minimal</code>)</span></h3>
+      <ol>
+        <li>Statistical outlier removal (20 neighbours, 2 σ), to be fair to the method.</li>
+        <li>In the table frame, <code>get_oriented_bounding_box()</code> (axes from PCA of the convex hull) or <code>get_minimal_oriented_bounding_box()</code> (the orientation with the smallest volume).</li>
+        <li>Conversion to our convention (z up): the OBB axis closest to the table normal becomes the height, the other two the length and width, and the yaw is the direction of the length axis seen from above. If the box rests on the table, its base is moved down to the table (the segmentation removed the first 8 mm).</li>
+      </ol>
+      <p>It <strong>encloses</strong> the points, so each face is set by the most extreme points: one flying pixel that survives the outlier removal grows the box. With PCA the axes also follow how the points are spread, not the faces of the box, so the box comes out rotated and too big; and if the OBB is tilted, the conversion to a z-up box is not exact.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Ours: the box from its planes <span class="note">(<code>--bbox planes</code>, the default)</span></h3>
+      <p>All in the table frame, with the normal of every point (radius 1 cm):</p>
+      <div class="table-wrap"><table>
+        <tr><th>Parameter</th><th>How</th><th>Points used</th></tr>
+        <tr><td>top</td><td>peak of the histogram of the heights, in the top 3 cm, then the median within 4 mm of it</td><td>vertical normal ($\lvert n_z\rvert &gt; 0.95$)</td></tr>
+        <tr><td>yaw</td><td>the walls' normals are at yaw + k·90°, so with their angles $\theta$: $\text{yaw} = \tfrac14 \arg\sum e^{4i\theta}$; a second pass drops normals more than 10° off</td><td>horizontal normal ($\lvert n_z\rvert &lt; 0.3$), away from the top and bottom edges</td></tr>
+        <tr><td>each of the 4 walls</td><td>median position, along the wall's normal, of the points facing that way on that side; with fewer than 30, the 1st / 99th percentile</td><td>$\lvert n \cdot \text{axis}\rvert &gt; 0.8$</td></tr>
+        <tr><td>bottom</td><td>the table (0) if lower than 2 cm, otherwise the 1st percentile</td><td>all</td></tr>
+      </table></div>
+      <p>Each face comes from the <strong>median of a whole face</strong>, not from extreme points, so noise and flying pixels barely move it. It is very close to a geometric fit already, and it is the <strong>initial estimate of the optimization</strong> (whatever <code>--bbox</code> says).</p>
+    </div>
+
+    <h3>Comparison (3D IoU, same segmentation and camera poses)</h3>
+    <div class="table-wrap"><table>
+      <tr><th>Scene</th><th class="num">Open3D OBB</th><th class="num">Open3D minimal OBB</th><th class="num">Ours (planes)</th><th class="num">Optimization</th></tr>
+      <tr><td>level_1</td><td class="num">0.707</td><td class="num">0.902</td><td class="num best">0.977</td><td class="num best">0.977</td></tr>
+      <tr><td>level_2</td><td class="num">0.603</td><td class="num">0.886</td><td class="num best">0.985</td><td class="num">0.984</td></tr>
+      <tr><td>level_3_aligned</td><td class="num">0.271</td><td class="num">0.312</td><td class="num">0.336</td><td class="num best">0.632</td></tr>
+      <tr><td>level_3_heights</td><td class="num">0.278</td><td class="num">0.303</td><td class="num">0.484</td><td class="num best">0.976</td></tr>
+      <tr><td>level_3_rotated</td><td class="num">0.190</td><td class="num">0.201</td><td class="num">0.279</td><td class="num best">0.977</td></tr>
+      <tr><td>level_3_widths</td><td class="num">0.224</td><td class="num">0.284</td><td class="num">0.309</td><td class="num best">0.967</td></tr>
+      <tr><td>level_3_stacked</td><td class="num">0.601</td><td class="num">0.898</td><td class="num best">0.974</td><td class="num">0.972</td></tr>
+      <tr><td>level_4</td><td class="num">0.498</td><td class="num">0.894</td><td class="num">0.913</td><td class="num best">0.966</td></tr>
+    </table></div>
+    <ul>
+      <li>Against the assignment's box, the optimization gains 0.07–0.38 IoU on levels 1–2.</li>
+      <li>Against ours it gains nothing on levels 1–2: one box per cluster and clean faces leave the optimization nothing to correct.</li>
+      <li>On level 3 every bounding box fails: there is one cluster for two boxes. Only the optimization splits it.</li>
+      <li>level_3_aligned (same colour, same width and height, flush) is impossible: the seam between the two boxes cannot be seen, so any split explains the points equally well.</li>
+    </ul>
+
+    <h2 id="optimization">Part 3 — Main method: least-squares fit</h2>
+    <p>Every box has 7 parameters in the table frame, $(x, y, z, \text{yaw}, L, W, H)$; all the boxes are fitted together with <code>scipy.optimize.least_squares</code> (<code>soft_l1</code>, scale 1 cm). Residuals:</p>
+    <ol>
+      <li><strong>Point → box:</strong> every point's distance to the surface of the box that explains it best. The association is recomputed in every evaluation (no outer loop): the closest box or, with colour (below), the box that best explains position <em>and</em> colour.</li>
+      <li><strong>Face support (box → points):</strong> 6×6 samples on every face; each should have a point near it, unless the face cannot be seen (on the table, or touching / covered by another box). Without it a box can grow over empty space at no cost: on level_4 three thin slabs covering the whole footprint won (IoU 0.142); with it, 0.683 without colour.</li>
+      <li><strong>Overlap:</strong> the penetration depth between every two boxes (separating axis theorem).</li>
+      <li><strong>Size:</strong> a small pull on $L + W$.</li>
+      <li><strong>Colour (level 4):</strong> a point pays $\tfrac{\sigma_g}{\sigma_c}\,\lVert c - c_k\rVert$ for a colour different from its box's, with $\sigma_g = 2$ mm and $\sigma_c = 0.15$: a full colour mismatch costs like a 6 mm distance, enough to place the seam between two flush boxes, too little to pull a point off the surface it is on. With $\sigma_c = 0.015$ (the colour noise), 20–30 % wrong colours dropped the IoU to 0.63; with 0.15 it stays at 0.966.</li>
+    </ol>
+    <p><strong>Split search:</strong> when a cluster has fewer boxes than <code>--num_boxes</code>, boxes are added one at a time; each time a few candidates are tried (a new box on the unexplained points, trimming the box that covers them, splitting a box in two, horizontally or in height) and the one with the lowest cost wins.</p>
+
+    <h3>Level 4: the three approaches, with wrong colours</h3>
+    <div class="table-wrap"><table>
+      <tr><th></th><th class="num">0 %</th><th class="num">10 %</th><th class="num">20 %</th><th class="num">30 %</th></tr>
+      <tr><td>1. split by colour → bounding box</td><td class="num">0.913</td><td class="num">0.919</td><td class="num best">0.819</td><td class="num best">0.463</td></tr>
+      <tr><td>2. split by colour → fit each box (fixed association)</td><td class="num best">0.966</td><td class="num">0.963</td><td class="num">0.640</td><td class="num bad">0.243</td></tr>
+      <tr><td>3. colour in the objective</td><td class="num best">0.966</td><td class="num best">0.966</td><td class="num">0.642</td><td class="num">0.462</td></tr>
+      <tr><td>geometry only (no colour in the objective)</td><td class="num">0.959</td><td class="num">0.959</td><td class="num">0.561</td><td class="num bad">0.253</td></tr>
+    </table></div>
+    <p class="note">level_4; a fraction of the points above the table gets the colour of another box before the segmentation. With 20–30 % wrong colours what fails is the initial estimate (the colour groups); started from clean boxes, approach 3 stays at 0.965.</p>
+
+    <h3>The boxes during the optimization</h3>
+    <p><code>--show_optimization</code> (or <code>--show</code>) draws the boxes after every iteration (the <code>callback</code> of <code>least_squares</code>): green = current, red = true. After the window is closed it plots the cost against the iteration and saves <code>optimization_cost.png</code> next to <code>result.json</code>.</p>
+    <div class="figs">
+      <figure><img src="assets/optimization/level_3_heights_1_start.png" alt="level_3_heights: start" /><figcaption>level_3_heights — start: one box over the merged cluster</figcaption></figure>
+      <figure><img src="assets/optimization/level_3_heights_2_split_search.png" alt="level_3_heights: split search" /><figcaption>split search: trying two boxes</figcaption></figure>
+      <figure><img src="assets/optimization/level_3_heights_3_final.png" alt="level_3_heights: final" /><figcaption>final fit</figcaption></figure>
+    </div>
+    <figure><img src="assets/optimization/level_3_heights_4_cost.png" alt="level_3_heights cost per iteration" /><figcaption>level_3_heights: 7 fits. The candidates that split the cluster in the right place drop to ~0.015, the others stop at ~0.11; the final fit refines the winner with all the points (its cost is higher only because it has ~9 times more points).</figcaption></figure>
+    <div class="figs">
+      <figure><img src="assets/optimization/level_4_1_start.png" alt="level_4: start" /><figcaption>level_4 — start: boxes from the colour groups</figcaption></figure>
+      <figure><img src="assets/optimization/level_4_2_final.png" alt="level_4: final" /><figcaption>level_4 — final fit</figcaption></figure>
+    </div>
+    <figure><img src="assets/optimization/level_4_3_cost.png" alt="level_4 cost per iteration" /><figcaption>level_4: a single fit, converged in about 6 iterations.</figcaption></figure>
+  </main>
+</body>
+</html>

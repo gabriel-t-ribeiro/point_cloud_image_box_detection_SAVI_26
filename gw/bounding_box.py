@@ -1,17 +1,22 @@
-"""Part 3 - base method: bounding box of each segmented object (reference only).
+"""Part 3 - base method: bounding box of each segmented object.
 
-The assignment suggests Open3D's get_oriented_bounding_box(), but its z axis does
-not have to be perpendicular to the table. Our boxes always stand on the table, so
-we work in the table frame (z up) and only need a 2D rectangle seen from above:
+Two versions (main.py --bbox):
 
-  - cv2.minAreaRect on the (x, y) of the points -> centre, length, width, yaw
-  - height from the z of the points
+  planes (default, ours): the box from its 5 visible planes, in the table frame (z up).
+    - top: the height where most points with a vertical normal are (histogram peak);
+    - yaw: the common direction of the walls, from the points with a horizontal normal
+      (their normals are at yaw + k*90 deg, so the angles are averaged as 4*angle);
+    - each wall: the median position of the points facing that way;
+    - bottom: the table (0) if the box rests on it.
+    It uses medians of whole faces, not extreme points, so noise and flying pixels
+    barely move it. It is also the initial estimate of the optimization.
 
-To be fair to this method (as the assignment asks) we first remove outliers and
-use percentiles instead of min / max, so a few flying pixels do not grow the box.
+  open3d / open3d_minimal (the assignment's suggestion): Open3D's oriented bounding box,
+    get_oriented_bounding_box() (PCA of the convex hull) or
+    get_minimal_oriented_bounding_box() (smallest volume), converted to a z-up box.
+    It encloses the points, so its faces are set by the most extreme points.
 
-The main method of the assignment (fitting with scipy.optimize.least_squares) is
-still to do; this gives us a first result.json and numbers to compare against.
+Both remove statistical outliers first, to be fair to the method (as the assignment asks).
 """
 
 import cv2
@@ -116,6 +121,30 @@ def bounding_box(object_cloud, T_camera0_table):
     (u0, u1), (v0, v1) = edges
     cx, cy = M @ [(u0 + u1) / 2, (v0 + v1) / 2]
     return Box(cx, cy, bottom, yaw, u1 - u0, v1 - v0, top - bottom)
+
+
+def open3d_bounding_box(object_cloud, T_camera0_table, minimal=False):
+    """The assignment's base method: Open3D's oriented bounding box, converted to a z-up box.
+
+    The OBB's axes do not have to follow our convention (z up): the axis closest to the table
+    normal becomes the height, the other two the length and width, and the yaw is the direction
+    of the length axis seen from above. If the OBB is tilted this conversion is not exact: that
+    is a limitation of the method, kept on purpose (it is the reference to compare against).
+    """
+    cloud, _ = object_cloud.remove_statistical_outlier(nb_neighbors=OUTLIER_NEIGHBOURS, std_ratio=OUTLIER_STD)
+    cloud = o3d.geometry.PointCloud(cloud).transform(np.linalg.inv(T_camera0_table))   # table frame
+    obb = cloud.get_minimal_oriented_bounding_box() if minimal else cloud.get_oriented_bounding_box()
+    R, extent, centre = np.asarray(obb.R), np.asarray(obb.extent), np.asarray(obb.center)
+
+    up = int(np.argmax(np.abs(R[2, :])))           # OBB axis most aligned with the table normal
+    others = [i for i in range(3) if i != up]
+    length_axis = R[:, others[0]]
+    yaw = float(np.arctan2(length_axis[1], length_axis[0]))
+    height = float(extent[up])
+    z = float(centre[2] - height / 2)
+    if z < 0.02:            # rests on the table: the segmentation cut the first 8 mm, extend to the table
+        height, z = height + z, 0.0
+    return Box(float(centre[0]), float(centre[1]), z, yaw, float(extent[others[0]]), float(extent[others[1]]), height)
 
 
 def boxes_to_result(boxes, T_camera0_table):

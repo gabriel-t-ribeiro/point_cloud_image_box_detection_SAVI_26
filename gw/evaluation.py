@@ -41,6 +41,19 @@ def true_camera_transforms(ground_truth, names):
     return [by_name[n] for n in names]
 
 
+def print_photometry(names, s, b, ground_truth=None):
+    """Estimated gain s and bias b of every image relative to image 000 (and the true ones, if known)."""
+    import photometry
+    true = photometry.true_relative_exposure(ground_truth, names) if ground_truth else None
+    print("\n  Photometric correction (each image vs image 000: c_i = s * c_000 + b)")
+    print("  image |     s |      b" + ("  | true s | true b" if true else ""))
+    for k, name in enumerate(names):
+        line = f"  {name:>5} | {s[k]:5.3f} | {b[k]:+6.3f}"
+        if true:
+            line += f"  |  {true[0][k]:5.3f} | {true[1][k]:+6.3f}"
+        print(line)
+
+
 def print_registration_errors(names, transforms, ground_truth):
     print("\n  Registration errors vs ground truth")
     print("  image | translation (mm) | rotation (deg)")
