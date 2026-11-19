@@ -16,14 +16,15 @@ still to do; this gives us a first result.json and numbers to compare against.
 
 import cv2
 import numpy as np
+import open3d as o3d
 
 from segmentation import to_frame
 
 OUTLIER_NEIGHBOURS = 20      # statistical outlier removal before the box
 OUTLIER_STD = 2.0
 PERCENTILE = 1.0             # ignore the PERCENTILE % most extreme points on each side (height)
-EDGE_BIN = 0.001             # histogram bin (m) to find the box edges
-TOP_SLAB = 0.01              # only the top 1 cm of the object is used for length / width
+NORMAL_RADIUS = 0.01         # radius (m) for the normals; raise it if the normals look too noisy
+MIN_WALL_POINTS = 30         # fewer points than this on a wall -> fall back to a percentile
 
 
 class Box:
@@ -46,43 +47,73 @@ class Box:
                 f"{self.length:.3f} x {self.width:.3f} x {self.height:.3f})")
 
 
-def edge_positions(u, bin_size=EDGE_BIN):
-    """Edges of a set of 1D coordinates: where the density falls to half of the plateau.
+def point_normals(p):
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(p)
+    cloud.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=NORMAL_RADIUS, max_nn=30))
+    return np.asarray(cloud.normals)
 
-    Unlike min / max (or percentiles), a few stray points cannot move this edge, and
-    for a blurred step the half-maximum is the true edge position.
-    """
-    bins = np.arange(u.min(), u.max() + bin_size, bin_size)
-    counts, bins = np.histogram(u, bins=bins)
-    counts = np.convolve(counts, np.ones(5) / 5, mode="same")        # light smoothing
-    n = len(counts)
-    plateau = np.median(counts[n // 4: 3 * n // 4])                  # density on the middle of the face
-    above = np.where(counts >= 0.5 * plateau)[0]
-    return bins[above[0]], bins[above[-1] + 1]
+
+def wall_yaw(normals_xy):
+    """Common direction of the 4 walls: the normals are at yaw + k*90 deg, so average 4*angle."""
+    theta = np.arctan2(normals_xy[:, 1], normals_xy[:, 0])
+    yaw = np.angle(np.sum(np.exp(4j * theta))) / 4
+    for _ in range(2):    # second pass without the normals that disagree (noise, corners)
+        d = (theta - yaw + np.pi / 4) % (np.pi / 2) - np.pi / 4
+        keep = np.abs(d) < np.radians(10)
+        yaw += np.angle(np.sum(np.exp(4j * d[keep]))) / 4
+    return yaw
+
+
+def wall_position(proj, facing, centre, positive_side):
+    """Position of one wall along an axis: median of the points facing that way on that side."""
+    side = proj > centre if positive_side else proj < centre
+    chosen = facing & side
+    if chosen.sum() >= MIN_WALL_POINTS:
+        return np.median(proj[chosen])
+    return np.percentile(proj, 99 if positive_side else 1)       # wall not seen: fall back
+
+def top_plane(z):
+    """Height of the top face: peak of the z histogram in the highest 3 cm (not an extreme value)."""
+    z_high = np.percentile(z, 99.5)
+    zs = z[z > z_high - 0.03]
+    bins = np.arange(zs.min(), zs.max() + 0.001, 0.001)
+    counts, bins = np.histogram(zs, bins=bins)
+    counts = np.convolve(counts, np.ones(3) / 3, mode="same")
+    return bins[np.argmax(counts)] + 0.0005
 
 
 def bounding_box(object_cloud, T_camera0_table):
-    """z-up bounding box of one object (cloud in camera0 frame), in the table frame."""
+    """z-up box of one object (cloud in camera0 frame) from its 5 planes, in the table frame."""
     cloud, _ = object_cloud.remove_statistical_outlier(nb_neighbors=OUTLIER_NEIGHBOURS, std_ratio=OUTLIER_STD)
     p = to_frame(np.asarray(cloud.points), T_camera0_table)
+    n = point_normals(p)
 
-    # Calculate Yaw
-    _, _, angle_deg = cv2.minAreaRect(p[:, :2].astype(np.float32))
-    yaw = np.radians(angle_deg)
-
-    # Calculate Yaw
+    # Top plane: points with a vertical normal, consensus height
+    horizontal = (np.abs(n[:, 2]) > 0.95) & (p[:, 2] > 0.02)
+    z0 = top_plane(p[horizontal, 2])
+    top = np.median(p[horizontal & (np.abs(p[:, 2] - z0) < 0.004), 2])
     bottom = max(0.0, np.percentile(p[:, 2], PERCENTILE))
-    top = np.percentile(p[:, 2], 100 - PERCENTILE)
     if bottom < 0.02:
         bottom = 0.0
 
-    # Calculate length / width / centre from the top slab, in the box frame
-    slab = p[p[:, 2] > top - TOP_SLAB]
+    # Side walls: points with a horizontal normal, away from the top and bottom edges
+    wall = (np.abs(n[:, 2]) < 0.3) & (p[:, 2] > bottom + 0.01) & (p[:, 2] < top - 0.01)
+    q = p[wall, :2]
+    nxy = n[wall, :2] / np.linalg.norm(n[wall, :2], axis=1, keepdims=True)
+    yaw = wall_yaw(nxy)
+
     c, s = np.cos(yaw), np.sin(yaw)
-    M = np.array([[c, -s], [s, c]])            # box frame -> table frame
-    uv = slab[:, :2] @ M                       # table frame -> box frame (u along length, v along width)
-    u0, u1 = edge_positions(uv[:, 0])
-    v0, v1 = edge_positions(uv[:, 1])
+    M = np.array([[c, -s], [s, c]])               # columns: u (length axis), v (width axis)
+    centre = q.mean(axis=0)
+    edges = []
+    for axis in (M[:, 0], M[:, 1]):
+        proj = q @ axis
+        facing = np.abs(nxy @ axis) > 0.8         # normal along this axis
+        lo = wall_position(proj, facing, centre @ axis, positive_side=False)
+        hi = wall_position(proj, facing, centre @ axis, positive_side=True)
+        edges.append((lo, hi))
+    (u0, u1), (v0, v1) = edges
     cx, cy = M @ [(u0 + u1) / 2, (v0 + v1) / 2]
     return Box(cx, cy, bottom, yaw, u1 - u0, v1 - v0, top - bottom)
 
