@@ -124,17 +124,45 @@ def _fit_box_to_points(points_table: np.ndarray, force_ground: bool = False) -> 
 
 
 def _split_box_along_axis(box: Box, axis: int = 0) -> tuple[Box, Box]:
-    """Bisect a box into two touching halves along local u (axis=0, length) or v (axis=1, width)."""
+    """Bisect a box into two touching halves along local u (axis=0), v (axis=1), or z (axis=2)."""
     c, s = np.cos(box.yaw), np.sin(box.yaw)
     if axis == 0:
         dx, dy = c * (box.length / 4.0), s * (box.length / 4.0)
         b1 = Box(box.x - dx, box.y - dy, box.z, box.yaw, box.length / 2.0, box.width, box.height)
         b2 = Box(box.x + dx, box.y + dy, box.z, box.yaw, box.length / 2.0, box.width, box.height)
-    else:
+    elif axis == 1:
         dx, dy = -s * (box.width / 4.0), c * (box.width / 4.0)
         b1 = Box(box.x - dx, box.y - dy, box.z, box.yaw, box.length, box.width / 2.0, box.height)
         b2 = Box(box.x + dx, box.y + dy, box.z, box.yaw, box.length, box.width / 2.0, box.height)
+    else:
+        half_h = box.height / 2.0
+        b1 = Box(box.x, box.y, box.z, box.yaw, box.length, box.width, half_h)
+        b2 = Box(box.x, box.y, box.z + half_h, box.yaw, box.length, box.width, half_h)
     return b1, b2
+
+
+def _carve_box_in_z(
+    box: Box,
+    cluster_pts: np.ndarray,
+    owner_pts: np.ndarray,
+) -> tuple[Box, Box] | None:
+    """Split `box` horizontally at the z boundary of `cluster_pts` (for stacked boxes)."""
+    if np.median(cluster_pts[:, 2]) > box.z + 0.5 * box.height:
+        z_cut = float(np.percentile(cluster_pts[:, 2], 5))
+    else:
+        z_cut = float(np.percentile(cluster_pts[:, 2], 95))
+
+    if z_cut <= box.z + MIN_DIM or z_cut >= box.z + box.height - MIN_DIM:
+        return None
+
+    lower_mask = owner_pts[:, 2] <= z_cut
+    upper_mask = ~lower_mask
+    if lower_mask.sum() < MIN_CLUSTER_PTS or upper_mask.sum() < MIN_CLUSTER_PTS:
+        return None
+
+    b_low = _fit_box_to_points(owner_pts[lower_mask], force_ground=(box.z < TABLE_Z_SNAP))
+    b_high = _fit_box_to_points(owner_pts[upper_mask], force_ground=False)
+    return b_low, b_high
 
 
 def _carve_box_for_cluster(
@@ -259,8 +287,14 @@ def _propose_split_candidates(points_table: np.ndarray, boxes: list[Box]) -> lis
                     trimmed, b_new = carved
                     others = [boxes[i] for i in range(len(boxes)) if i != c_owner]
                     candidates.append(others + [trimmed, b_new])
+                carved_z = _carve_box_in_z(boxes[c_owner], cluster_pts, points_table[owner == c_owner])
+                if carved_z is not None:
+                    b_low, b_high = carved_z
+                    others = [boxes[i] for i in range(len(boxes)) if i != c_owner]
+                    candidates.append(others + [b_low, b_high])
 
-    # Candidate 3: bisect the box with the highest residual energy (or largest volume if all fit tightly)
+    # Candidates 3 & 4: bisect the box with highest residual energy (or largest volume)
+    # along its longest horizontal axis AND along z (for flush stacked boxes).
     err_per_box = [float(np.sum(np.minimum(min_d[owner == i], 0.05) ** 2)) for i in range(len(boxes))]
     if max(err_per_box) > 1e-3:
         target = int(np.argmax(err_per_box))
@@ -271,6 +305,9 @@ def _propose_split_candidates(points_table: np.ndarray, boxes: list[Box]) -> lis
     b1, b2 = _split_box_along_axis(b, long_axis)
     others = [boxes[i] for i in range(len(boxes)) if i != target]
     candidates.append(others + [b1, b2])
+    if b.height >= 2.0 * MIN_DIM:
+        bz1, bz2 = _split_box_along_axis(b, 2)
+        candidates.append(others + [bz1, bz2])
 
     return candidates
 
