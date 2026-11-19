@@ -123,15 +123,15 @@ def box_errors(est, true):
     for swap in (False, True):
         length, width = (true[5], true[4]) if swap else (true[4], true[5])
         yaw_true = true[3] + (np.pi / 2 if swap else 0.0)
-        yaw_err = abs((est[3] - yaw_true + np.pi / 2) % np.pi - np.pi / 2)   # modulo 180 deg
-        candidate = (np.degrees(yaw_err), abs(est[4] - length), abs(est[5] - width))
+        yaw_err = (est[3] - yaw_true + np.pi / 2) % np.pi - np.pi / 2   # modulo 180 deg
+        candidate = (np.degrees(yaw_err), (est[4] - length), (est[5] - width))
         if best is None or candidate[0] < best[0]:
             best = candidate
     return {"position_mm": np.linalg.norm(centre_est - centre_true) * 1000,
-            "z_mm": abs(est[2] - true[2]) * 1000,
+            "z_mm": (est[2] - true[2]) * 1000,
             "yaw_deg": best[0],
             "length_mm": best[1] * 1000, "width_mm": best[2] * 1000,
-            "height_mm": abs(est[6] - true[6]) * 1000}
+            "height_mm": (est[6] - true[6]) * 1000}
 
 
 def print_box_errors(result_boxes, ground_truth, T_camera0_table, title):
@@ -156,7 +156,10 @@ def print_box_errors(result_boxes, ground_truth, T_camera0_table, title):
         used.add(j)
         ious.append(iou)
         e = box_errors(ests[j], true)
-        print(f"  {k:3d} | {iou:.3f} | {e['position_mm']:8.1f} | {e['z_mm']:6.1f} | {e['yaw_deg']:9.2f} | "
-              f"{e['length_mm']:11.1f} | {e['width_mm']:10.1f} | {e['height_mm']:11.1f}")
-    print(f"  mean IoU: {np.mean(ious):.3f}")
+        print(f"  {k+1:3d} | {iou:.3f} | {e['position_mm']:8.1f} | {e['z_mm']:+6.1f} | {e['yaw_deg']:+9.2f} | "
+              f"{e['length_mm']:+11.1f} | {e['width_mm']:+10.1f} | {e['height_mm']:+11.1f}")
+    if ious:
+        print(f"  mean IoU: {np.mean(ious):.3f}")
+    else:
+        print("  no boxes in the ground truth")
     return ious

@@ -92,7 +92,7 @@ def main():
     result_boxes = bounding_box.boxes_to_result(boxes, seg.T_camera0_table)
 
     if ground_truth:
-        evaluation.print_box_errors(result_boxes, ground_truth, seg.T_camera0_table, "Bounding box vs ground truth")
+        evaluation.print_box_errors(result_boxes, ground_truth, seg.T_camera0_table, "Bounding Box Errors")
     if args.show:
         show_boxes(aggregated, result_boxes, ground_truth)
 
