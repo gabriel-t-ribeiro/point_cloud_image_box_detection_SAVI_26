@@ -10,7 +10,7 @@ Steps:
     Part 1  registration.py   align all cameras with camera 000, aggregate the clouds
     Part 2  segmentation.py   table plane, table frame, objects above the table
     Part 3  bounding_box.py   base method: z-up bounding box per object
-            (the optimization method is still to do)
+            optimization.py   main method: nonlinear least-squares box fitting
     evaluation.py compares with ground_truth.json when the scene has it.
 Writes result.json (default: inside the scene folder).
 See the README.md at the top of the repository for the full tutorial.
@@ -102,7 +102,9 @@ def main():
     # -------------------------------------------------------------------------
     print("\nPart 3 - boxes (optimization)")
     all_obj_points = np.vstack([np.asarray(c.points) for c in obj_clouds]) if obj_clouds else np.empty((0, 3))
-    opt_boxes = optimization.optimize_boxes(all_obj_points, boxes, seg.T_camera0_table)
+    opt_boxes = optimization.optimize_boxes(
+        all_obj_points, boxes, seg.T_camera0_table, num_boxes=args.num_boxes
+    )
     for box in opt_boxes:
         print(f"  {box}")
     result_boxes = bounding_box.boxes_to_result(opt_boxes, seg.T_camera0_table)

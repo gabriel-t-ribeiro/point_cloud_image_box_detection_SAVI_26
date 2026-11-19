@@ -34,6 +34,7 @@ MAX_TILT_DEG = 45             # max angle between a plane normal and "up" to cal
 MIN_TABLE_AREA = 0.25         # m^2; smaller horizontal planes (e.g. box tops) are not the table
 
 TABLE_CLUSTER_EPS = 0.03      # DBSCAN on the table inliers
+PLANE_REFIT_ITERS = 5         # iterative SVD refits to remove initial RANSAC plane tilt
 MIN_HEIGHT = 0.008            # points closer than this to the table top are the table itself
 MAX_HEIGHT = 0.6              # ignore anything higher above the table
 EDGE_MARGIN = 0.01            # shrink the table limits a bit (table edge is noisy)
@@ -97,28 +98,41 @@ def find_table_plane(cloud, up_guess=np.array([0.0, -1.0, 0.0]), verbose=True):
 def table_frame(points, normal, d):
     """Table points (biggest cluster on the plane) and T_camera0_table.
 
-    1. Points close to the RANSAC plane -> biggest DBSCAN cluster = table top.
-    2. Refit the plane to those points with least squares (SVD: the normal is the
-       direction of least variance). RANSAC's plane is only as good as its 3 best
-       points; a small tilt would leave part of the table "above the table".
-    3. Seen from above, the table is a rectangle: cv2.minAreaRect gives its centre,
+    1. Iteratively collect points within PLANE_DISTANCE of the current plane, keep
+       the biggest DBSCAN cluster (= table top), and refit the plane by least
+       squares (SVD: the normal is the direction of least variance).
+       Why iterate? RANSAC's 3-point plane with a ±1 cm slab can be tilted by
+       1–2 deg, so a single pass clips one edge of the table and includes the
+       bottom of the boxes on the other side, leaving a ~0.5–1 deg residual tilt.
+       Over a 1.25 m table, even 0.8 deg raises one end by ~9 mm > MIN_HEIGHT,
+       causing part of the table to be detected as a box. Repeating 3–5 times
+       converges to < 0.02 deg.
+    2. Seen from above, the table is a rectangle: cv2.minAreaRect gives its centre,
        size and direction. x = long side, z = normal (up), y = z cross x.
     """
     import cv2
 
-    distance = points @ normal + d
-    on_plane = np.where(np.abs(distance) < PLANE_DISTANCE)[0]
+    for _ in range(PLANE_REFIT_ITERS):
+        distance = points @ normal + d
+        on_plane = np.where(np.abs(distance) < PLANE_DISTANCE)[0]
 
-    plane_cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points[on_plane]))
-    plane_cloud = plane_cloud.voxel_down_sample(PLANE_VOXEL / 2)
-    labels = np.array(plane_cloud.cluster_dbscan(eps=TABLE_CLUSTER_EPS, min_points=10))
-    biggest_label = np.bincount(labels[labels >= 0]).argmax()
-    table_points = np.asarray(plane_cloud.points)[labels == biggest_label]
+        plane_cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points[on_plane]))
+        plane_cloud = plane_cloud.voxel_down_sample(PLANE_VOXEL / 2)
+        labels = np.array(plane_cloud.cluster_dbscan(eps=TABLE_CLUSTER_EPS, min_points=10))
+        biggest_label = np.bincount(labels[labels >= 0]).argmax()
+        table_points = np.asarray(plane_cloud.points)[labels == biggest_label]
 
-    # Least-squares plane: normal = last right singular vector of the centred points
-    centre = table_points.mean(axis=0)
-    _, _, Vt = np.linalg.svd(table_points - centre, full_matrices=False)
-    z_axis = Vt[2] if Vt[2] @ normal > 0 else -Vt[2]
+        # Least-squares plane: normal = last right singular vector of the centred points
+        centre = table_points.mean(axis=0)
+        _, _, Vt = np.linalg.svd(table_points - centre, full_matrices=False)
+        z_axis = Vt[2] if Vt[2] @ normal > 0 else -Vt[2]
+        new_d = -float(z_axis @ centre)
+
+        angle_change = np.arccos(np.clip(z_axis @ normal, -1.0, 1.0))
+        offset_change = abs(new_d - d)
+        normal, d = z_axis, new_d
+        if angle_change < 1e-4 and offset_change < 1e-4:
+            break
 
     # 2D coordinates in the plane (any two perpendicular in-plane directions u, v)
     u = Vt[0]
