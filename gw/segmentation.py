@@ -16,6 +16,13 @@ Parte08/ex4/main.py (table frame + crop above the table), adapted to these scene
      table centre, z up, x along the table's long side (minimum-area rectangle).
   3. Keep the points above the table (z > MIN_HEIGHT) and inside its limits.
   4. Separate the objects with euclidean clustering (DBSCAN).
+  5. Colour (level 4): touching boxes of different colours form one euclidean
+     cluster, so each cluster is split by colour. We use chromaticity
+     (r, g) = (R, G) / (R + G + B): it removes the brightness, so the top and the
+     sides of a box (lit differently) get the same value. The colours present are
+     the peaks of the 2D chromaticity histogram; each point takes the colour of the
+     nearest peak, or none if it is too far from every peak (colours mixed at the
+     seams between boxes). A cluster with a single peak is left as it is.
 
 All indices returned are indices into the aggregated cloud, so the same points can
 be used later by the box fitting (Part 3) and by the evaluation.
@@ -23,6 +30,7 @@ be used later by the box fitting (Part 3) and by the evaluation.
 
 import numpy as np
 import open3d as o3d
+from scipy import ndimage
 
 # ---------------------------------------------------------------------------
 # Parameters (meters)
@@ -43,15 +51,26 @@ OBJECT_CLUSTER_EPS = 0.015    # DBSCAN eps for the objects (max gap inside one o
 OBJECT_MIN_POINTS = 30        # DBSCAN min_points
 MIN_OBJECT_POINTS = 500       # clusters smaller than this are noise, not boxes
 
+# Colour split (chromaticity units: r, g in [0, 1])
+COLOUR_SPLIT = True           # False = euclidean clustering only (levels 1-3 behaviour)
+COLOUR_BIN = 0.01             # histogram bin size (chromaticity noise of one box is ~0.01)
+COLOUR_SMOOTH = 1.0           # Gaussian smoothing of the histogram (in bins)
+COLOUR_MIN_PEAK = 0.003       # a colour peak must hold >= 0.3% of the cluster's points (real ~2-9%, seams ~0.01%)
+COLOUR_MAX_DISTANCE = 0.06    # farther than this from every peak = no clear colour (seam mixing)
+COLOUR_MIN_BRIGHTNESS = 0.15  # R + G + B below this: too dark, chromaticity is unreliable
+
 
 class Segmentation:
     """Result of segment_objects()."""
 
-    def __init__(self, T_camera0_table, table_indices, object_indices, table_size):
+    def __init__(self, T_camera0_table, table_indices, object_indices, table_size, no_colour_indices=None):
         self.T_camera0_table = T_camera0_table   # 4x4, table frame: origin at the centre, z up
         self.table_indices = table_indices       # points of the table top
         self.object_indices = object_indices     # list, one index array per object (biggest first)
         self.table_size = table_size             # (length along x, width along y)
+        # points of colour-split clusters that matched no colour (left out of object_indices)
+        self.no_colour_indices = no_colour_indices if no_colour_indices is not None else np.array([], int)
+        self.colour_split = False                # True if some cluster was split by colour
 
 
 # ---------------------------------------------------------------------------
@@ -173,19 +192,77 @@ def segment_objects(aggregated, verbose=True):
                              (np.abs(p[:, 0]) < half[0]) & (np.abs(p[:, 1]) < half[1]))[0]
 
     # Euclidean clustering
-    objects_cloud = aggregated.select_by_index(candidate_indices)
-    labels = np.array(objects_cloud.cluster_dbscan(eps=OBJECT_CLUSTER_EPS, min_points=OBJECT_MIN_POINTS))
-    object_indices = []
-    for label in range(labels.max() + 1):
-        idx = candidate_indices[labels == label]
-        if len(idx) >= MIN_OBJECT_POINTS:
+    clusters = euclidean_clusters(aggregated, candidate_indices)
+
+    # Colour: split clusters that contain more than one colour
+    object_indices, no_colour, n_split = [], [], 0
+    colours = np.asarray(aggregated.colors)
+    for idx in clusters:
+        groups, rejected = split_by_colour(colours[idx]) if COLOUR_SPLIT and aggregated.has_colors() else ([], [])
+        if len(groups) <= 1:
             object_indices.append(idx)
+            continue
+        no_colour.append(idx[rejected])
+        n_split += 1
+        for group in groups:   # a colour may appear in separate pieces (red | blue | red): cluster again
+            object_indices += euclidean_clusters(aggregated, idx[group])
+        if verbose:
+            print(f"  cluster of {len(idx)} points split by colour into {len(groups)} "
+                  f"({100 * len(rejected) / len(idx):.1f}% of its points with no clear colour)")
     object_indices.sort(key=len, reverse=True)
+    no_colour = np.concatenate(no_colour) if no_colour else np.array([], int)
 
     if verbose:
         print(f"  table {table_size[0]:.2f} x {table_size[1]:.2f} m, {len(candidate_indices)} points above it, "
               f"{len(object_indices)} objects: {[len(i) for i in object_indices]} points")
-    return Segmentation(T_camera0_table, table_indices, object_indices, table_size)
+    segmentation = Segmentation(T_camera0_table, table_indices, object_indices, table_size, no_colour)
+    segmentation.colour_split = n_split > 0
+    return segmentation
+
+
+def euclidean_clusters(cloud, indices):
+    """DBSCAN on the given points of the cloud; returns the clusters as index arrays into the cloud."""
+    labels = np.array(cloud.select_by_index(indices).cluster_dbscan(eps=OBJECT_CLUSTER_EPS,
+                                                                    min_points=OBJECT_MIN_POINTS))
+    clusters = [indices[labels == label] for label in range(labels.max() + 1)]
+    return [c for c in clusters if len(c) >= MIN_OBJECT_POINTS]
+
+
+# ---------------------------------------------------------------------------
+# 5. Colour
+# ---------------------------------------------------------------------------
+def chromaticity(rgb):
+    """(r, g) = (R, G) / (R + G + B): colour without brightness. Returns (N, 2) and the brightness R + G + B."""
+    brightness = rgb.sum(axis=1)
+    return rgb[:, :2] / np.maximum(brightness, 1e-6)[:, None], brightness
+
+
+def colour_peaks(chrom):
+    """Peaks of the smoothed 2D chromaticity histogram holding >= COLOUR_MIN_PEAK of the points -> (P, 2)."""
+    bins = int(round(1.0 / COLOUR_BIN))
+    hist, _, _ = np.histogram2d(chrom[:, 0], chrom[:, 1], bins=bins, range=[[0, 1], [0, 1]])
+    hist = ndimage.gaussian_filter(hist, COLOUR_SMOOTH)
+    is_peak = (hist == ndimage.maximum_filter(hist, size=5)) & (hist >= COLOUR_MIN_PEAK * len(chrom))
+    return (np.argwhere(is_peak) + 0.5) * COLOUR_BIN   # bin centres
+
+
+def split_by_colour(rgb):
+    """Splits the points of one cluster by colour.
+
+    Returns (groups, rejected): one index array per colour peak (indices into rgb), and the
+    indices of the points with no clear colour (too dark, or farther than COLOUR_MAX_DISTANCE
+    from every peak). With a single peak, groups has one element and nothing should change.
+    """
+    chrom, brightness = chromaticity(rgb)
+    bright = brightness >= COLOUR_MIN_BRIGHTNESS
+    peaks = colour_peaks(chrom[bright])
+    if len(peaks) <= 1:
+        return [np.arange(len(rgb))], np.array([], int)
+    distances = np.linalg.norm(chrom[:, None, :] - peaks[None, :, :], axis=2)   # (N, P)
+    nearest = np.argmin(distances, axis=1)
+    clear = bright & (distances[np.arange(len(rgb)), nearest] < COLOUR_MAX_DISTANCE)
+    groups = [np.where(clear & (nearest == p))[0] for p in range(len(peaks))]
+    return groups, np.where(~clear)[0]
 
 
 # ---------------------------------------------------------------------------

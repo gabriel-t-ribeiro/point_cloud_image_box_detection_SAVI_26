@@ -8,9 +8,9 @@ Usage (from inside gw/):
 
 Steps:
     Part 1  registration.py   align all cameras with camera 000, aggregate the clouds
-    Part 2  segmentation.py   table plane, table frame, objects above the table
+    Part 2  segmentation.py   table plane, table frame, objects above the table (split by colour if needed)
     Part 3  bounding_box.py   base method: z-up bounding box per object
-            optimization.py   main method: nonlinear least-squares box fitting
+            optimization.py   main method: nonlinear least-squares box fitting (geometry + colour)
     evaluation.py compares with ground_truth.json when the scene has it.
 Writes result.json (default: inside the scene folder).
 See the README.md at the top of the repository for the full tutorial.
@@ -100,17 +100,38 @@ def main():
     # -------------------------------------------------------------------------
     # Part 3 - Boxes (main method: nonlinear least-squares optimization)
     # -------------------------------------------------------------------------
-    print("\nPart 3 - boxes (optimization)")
-    all_obj_points = np.vstack([np.asarray(c.points) for c in obj_clouds]) if obj_clouds else np.empty((0, 3))
-    opt_boxes = optimization.optimize_boxes(
-        all_obj_points, boxes, seg.T_camera0_table, num_boxes=args.num_boxes
-    )
+    # Main result: colour in the objective (level 4, approach 3). Each point goes to the box that best
+    # explains its position AND its colour; with a single colour it is the same as the geometric fit.
+    # The points with no clear colour (seams between boxes) are used too: geometry still places them.
+    print("\nPart 3 - boxes (optimization, geometry + colour)")
+    obj_points = np.vstack([np.asarray(c.points) for c in obj_clouds]) if obj_clouds else np.empty((0, 3))
+    obj_colours = np.vstack([np.asarray(c.colors) for c in obj_clouds]) if obj_clouds else np.empty((0, 3))
+    all_points = np.vstack([obj_points, np.asarray(aggregated.points)[seg.no_colour_indices]])
+    all_colours = np.vstack([obj_colours, np.asarray(aggregated.colors)[seg.no_colour_indices]])
+    opt_boxes = optimization.optimize_boxes(all_points, boxes, seg.T_camera0_table, num_boxes=args.num_boxes,
+                                            association="colour", point_colours=all_colours)
     for box in opt_boxes:
         print(f"  {box}")
     result_boxes = bounding_box.boxes_to_result(opt_boxes, seg.T_camera0_table)
 
     if ground_truth:
         evaluation.print_box_errors(result_boxes, ground_truth, seg.T_camera0_table, "Optimization Errors")
+
+    # Level 4 comparison (only when some cluster was split by colour):
+    #   approach 1 = the bounding box above (one per colour group)
+    #   approach 2 = separate by colour, then fit: each point stays with its colour group's box
+    #   geometric  = same fit without colour (each point goes to the closest box)
+    if ground_truth and seg.colour_split:
+        print("\nPart 3 - level 4 comparison")
+        if len(obj_clouds) == args.num_boxes:
+            assignment = np.concatenate([np.full(len(c.points), j) for j, c in enumerate(obj_clouds)])
+            fixed_boxes = optimization.optimize_boxes(obj_points, boxes, seg.T_camera0_table, num_boxes=args.num_boxes,
+                                                      association="fixed", assignment=assignment)
+            evaluation.print_box_errors(bounding_box.boxes_to_result(fixed_boxes, seg.T_camera0_table), ground_truth,
+                                        seg.T_camera0_table, "Separate by colour, then fit (fixed association)")
+        geo_boxes = optimization.optimize_boxes(all_points, boxes, seg.T_camera0_table, num_boxes=args.num_boxes)
+        evaluation.print_box_errors(bounding_box.boxes_to_result(geo_boxes, seg.T_camera0_table), ground_truth,
+                                    seg.T_camera0_table, "Geometry only (no colour in the objective)")
     if args.show:
         show_boxes(aggregated, result_boxes, ground_truth)
 

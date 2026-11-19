@@ -11,6 +11,12 @@ On every residual evaluation:
      each other or interpenetrating across seams.
   3. A tiny (L + W) regularization keeps unseen horizontal walls from drifting
      into empty space without pulling the cropped z=0 bottom upward.
+  4. Face support (model -> data): points sampled on every box face must have a
+     data point nearby, unless the face cannot be seen (on the table, or touching /
+     covered by another box). Terms 1 and 4 together are a two-sided (Chamfer-like)
+     fit: without 4, a box can grow over empty space at no cost (e.g. in level_4
+     three thin horizontal slabs covering the whole footprint won over three
+     side-by-side boxes).
 
 When segmentation merges touching boxes into fewer clusters than `num_boxes`
 (Level 3), `optimize_boxes` grows the box set one box at a time by trying up to
@@ -29,15 +35,29 @@ import cv2
 import numpy as np
 import open3d as o3d
 from scipy.optimize import least_squares
+from scipy.spatial import cKDTree
 
 from bounding_box import Box
-from segmentation import to_frame
+from segmentation import chromaticity, to_frame, COLOUR_MIN_BRIGHTNESS
 
 F_SCALE = 0.01            # soft_l1 transition scale (m): errors > 1 cm are treated robustly
 SIZE_REG_XY = 0.05        # gentle pull on (L + W) only; leaves z and H free for stacked boxes
 OVERLAP_WEIGHT = 500.0    # weight on 3D penetration depth (m) between any two boxes
 MIN_DIM = 0.02            # minimum box side length (m)
 TABLE_Z_SNAP = 0.025      # boxes with z_init < 2.5 cm rest on the table (anchor z = 0)
+FACE_SUPPORT_WEIGHT = 1.0 # weight on face-sample -> nearest data point distance (0 = off; 0.3 too weak for level_4)
+FACE_SAMPLES = 6          # n x n samples per face (6 faces -> 6 n^2 residuals per box)
+FACE_HIDDEN_MARGIN = 0.01 # face samples this close to the table or to another box are unobservable (m)
+
+# Colour in the objective (association="colour"). Each error is divided by its expected noise
+# (Parte 06, ex. 3): a colour error of COLOUR_SIGMA costs the same as a distance of GEOMETRY_SIGMA.
+GEOMETRY_SIGMA = 0.002    # point-to-surface noise (m): depth noise ~1.5 mm, 2 mm voxels
+# COLOUR_SIGMA is how much a colour can be trusted as evidence of the box, not the chromaticity noise
+# (0.01). Colour only has to break geometric ties (a flush seam); with 0.15 a full colour mismatch
+# (~0.47) costs like a 6 mm distance. Level 4 with 20-30% wrong colours, clean initial boxes:
+# 0.015 -> IoU 0.63, 0.05 -> 0.96, 0.15 -> 0.966 (same as with no wrong colours).
+COLOUR_SIGMA = 0.15
+BOX_COLOUR_DISTANCE = 0.01  # points closer than this to a box (m) give its colour (median)
 
 # Iterative splitting parameters (used only when len(initial_boxes) < num_boxes)
 RESIDUAL_THRESH = 0.015       # point distance (m) above which a point is considered unexplained
@@ -62,6 +82,62 @@ def box_surface_distances(points: np.ndarray, params: np.ndarray) -> np.ndarray:
     outside = np.linalg.norm(np.maximum(d, 0.0), axis=1)
     inside = np.minimum(np.max(d, axis=1), 0.0)
     return outside - inside
+
+
+def _unit_face_samples(n: int) -> np.ndarray:
+    """n x n cell centres on each of the 6 faces of the unit box [-0.5, 0.5]^3 -> (6 n^2, 3)."""
+    g = (np.arange(n) + 0.5) / n - 0.5
+    u, v = [a.ravel() for a in np.meshgrid(g, g)]
+    faces = []
+    for axis in range(3):
+        others = [a for a in range(3) if a != axis]
+        for side in (-0.5, 0.5):
+            f = np.zeros((n * n, 3))
+            f[:, axis] = side
+            f[:, others[0]], f[:, others[1]] = u, v
+            faces.append(f)
+    return np.vstack(faces)
+
+
+UNIT_FACE_SAMPLES = _unit_face_samples(FACE_SAMPLES)
+
+
+def _box_to_table(params: np.ndarray, unit_points: np.ndarray) -> np.ndarray:
+    """Maps points of the unit box to the table frame for box [x, y, z, yaw, L, W, H]."""
+    x, y, z, yaw, L, W, H = params
+    c, s = np.cos(yaw), np.sin(yaw)
+    q = unit_points * np.array([L, W, H])
+    return np.column_stack([c * q[:, 0] - s * q[:, 1] + x,
+                            s * q[:, 0] + c * q[:, 1] + y,
+                            q[:, 2] + z + H / 2.0])
+
+
+def _inside_or_on(points: np.ndarray, params: np.ndarray, margin: float) -> np.ndarray:
+    """True for points inside the box or within `margin` of its surface (signed distance < margin)."""
+    x, y, z, yaw, L, W, H = params
+    c, s = np.cos(yaw), np.sin(yaw)
+    d = points - np.array([x, y, z + H / 2.0])
+    q = np.column_stack([c * d[:, 0] + s * d[:, 1], -s * d[:, 0] + c * d[:, 1], d[:, 2]])
+    return np.max(np.abs(q) - np.array([L, W, H]) / 2.0, axis=1) < margin
+
+
+def _face_support_residuals(boxes_params: np.ndarray, tree: cKDTree, weight: float) -> np.ndarray:
+    """One residual per face sample: weight * distance to the nearest data point.
+
+    Samples that cannot be observed give 0 (least_squares needs a fixed-length residual vector):
+    on the table (bottom of a resting box) or inside/on another box (faces where two boxes
+    touch, the part of a lower box's top covered by a stacked box).
+    """
+    out = []
+    for kb, p in enumerate(boxes_params):
+        samples = _box_to_table(p, UNIT_FACE_SAMPLES)
+        hidden = samples[:, 2] < FACE_HIDDEN_MARGIN
+        for j, other in enumerate(boxes_params):
+            if j != kb:
+                hidden |= _inside_or_on(samples, other, FACE_HIDDEN_MARGIN)
+        dist, _ = tree.query(samples)
+        out.append(np.where(hidden, 0.0, weight * dist))
+    return np.concatenate(out)
 
 
 def _box_overlap_depth(b1: np.ndarray, b2: np.ndarray) -> float:
@@ -215,8 +291,18 @@ def _fit_boxes(
     size_reg_xy: float,
     overlap_weight: float,
     max_nfev: int | None = None,
+    assignment: np.ndarray | None = None,
+    colour_dist: np.ndarray | None = None,
 ) -> tuple[list[Box], float]:
-    """Run joint nonlinear least-squares on `boxes` in the table frame."""
+    """Run joint nonlinear least-squares on `boxes` in the table frame.
+
+    Point -> box association, recomputed in every evaluation unless fixed:
+      - default:            the box whose surface is closest (geometry only);
+      - assignment (N,):    fixed box index per point (separate by colour, then fit);
+      - colour_dist (K, N): chromaticity distance of each point to each box colour; the point
+                            takes the box minimising (d / GEOMETRY_SIGMA)^2 + (c / COLOUR_SIGMA)^2
+                            and also returns its colour error, scaled to metres.
+    """
     k = len(boxes)
     x0 = _pack_boxes(boxes)
 
@@ -233,19 +319,33 @@ def _fit_boxes(
     x0 = np.clip(x0, lb + 1e-9, ub - 1e-9)
 
     pairs = [(i, j) for i in range(k) for j in range(i + 1, k)]
+    tree = cKDTree(points_table)  # nearest data point for the face-support term (built once per fit)
+    every_point = np.arange(len(points_table))
+    colour_to_metres = GEOMETRY_SIGMA / COLOUR_SIGMA
 
     def residuals(theta: np.ndarray) -> np.ndarray:
         boxes_params = theta.reshape(k, 7)
         dists = np.vstack([box_surface_distances(points_table, p) for p in boxes_params])
-        point_res = np.min(dists, axis=0)
+        colour_res = []
+        if assignment is not None:
+            point_res = dists[assignment, every_point]
+        elif colour_dist is not None:
+            cost = (dists / GEOMETRY_SIGMA) ** 2 + (colour_dist / COLOUR_SIGMA) ** 2
+            best = np.argmin(cost, axis=0)
+            point_res = dists[best, every_point]
+            colour_res = [colour_to_metres * colour_dist[best, every_point]]
+        else:
+            point_res = np.min(dists, axis=0)
         size_res = size_reg_xy * (boxes_params[:, 4] + boxes_params[:, 5])
+        parts = [point_res, *colour_res, size_res]
+        if FACE_SUPPORT_WEIGHT > 0.0:
+            parts.append(_face_support_residuals(boxes_params, tree, FACE_SUPPORT_WEIGHT))
         if pairs and overlap_weight > 0.0:
-            overlap_res = np.array(
+            parts.append(np.array(
                 [overlap_weight * _box_overlap_depth(boxes_params[i], boxes_params[j]) for i, j in pairs],
                 dtype=float,
-            )
-            return np.concatenate([point_res, size_res, overlap_res])
-        return np.concatenate([point_res, size_res])
+            ))
+        return np.concatenate(parts)
 
     res = least_squares(
         residuals,
@@ -320,11 +420,21 @@ def optimize_boxes(
     f_scale: float = F_SCALE,
     size_reg_xy: float = SIZE_REG_XY,
     overlap_weight: float = OVERLAP_WEIGHT,
+    association: str = "geometric",
+    point_colours: np.ndarray | None = None,
+    assignment: np.ndarray | None = None,
 ) -> list[Box]:
     """Refine box poses and dimensions in the table frame using least_squares.
 
     If `num_boxes` is greater than `len(initial_boxes)` (merged clusters of touching
     boxes), iteratively splits/peels until `num_boxes` boxes are fitted jointly.
+
+    association (level 4 comparison):
+      "geometric": each point goes to the closest box surface (recomputed every evaluation);
+      "fixed":     `assignment` gives the box of each point (its colour group) and never changes;
+                   needs one initial box per group, so no splitting;
+      "colour":    like geometric, but a point also pays for a colour different from the box's
+                   (`point_colours`, RGB). Box colours are measured once, before the final fit.
     """
     target_boxes = len(initial_boxes) if num_boxes is None else num_boxes
     if target_boxes <= 0 or len(points_camera0) == 0:
@@ -332,6 +442,14 @@ def optimize_boxes(
 
     points_table = to_frame(points_camera0, T_camera0_table)
     boxes = list(initial_boxes)
+
+    if association == "fixed":
+        if assignment is None or len(boxes) != target_boxes:
+            raise ValueError("association='fixed' needs one initial box per colour group and their assignment")
+        fitted_boxes, _ = _fit_boxes(points_table, boxes, f_scale, size_reg_xy, overlap_weight,
+                                     assignment=np.asarray(assignment))
+        return fitted_boxes
+
     if len(boxes) == 0:
         boxes = [_fit_box_to_points(points_table)]
 
@@ -354,5 +472,29 @@ def optimize_boxes(
                     best_cost, best_boxes = cost, fitted
             boxes = best_boxes
 
-    fitted_boxes, _ = _fit_boxes(points_table, boxes, f_scale, size_reg_xy, overlap_weight)
+    colour_dist = None
+    if association == "colour" and point_colours is not None:
+        colour_dist = _colour_distances(points_table, point_colours, boxes)
+    fitted_boxes, _ = _fit_boxes(points_table, boxes, f_scale, size_reg_xy, overlap_weight,
+                                 colour_dist=colour_dist)
     return fitted_boxes
+
+
+def _colour_distances(points_table: np.ndarray, point_colours: np.ndarray, boxes: list[Box]) -> np.ndarray:
+    """(K, N) chromaticity distance of every point to every box colour.
+
+    Box colour = median chromaticity of the points within BOX_COLOUR_DISTANCE of its surface
+    (closest box only). Too-dark points get distance 0 to every box: only geometry decides for them.
+    """
+    chrom, brightness = chromaticity(np.asarray(point_colours))
+    bp = _pack_boxes(boxes).reshape(len(boxes), 7)
+    dists = np.vstack([box_surface_distances(points_table, p) for p in bp])
+    owner, closest = np.argmin(dists, axis=0), np.min(dists, axis=0)
+    bright = brightness >= COLOUR_MIN_BRIGHTNESS
+    box_chrom = []
+    for kb in range(len(boxes)):
+        mine = bright & (owner == kb) & (closest < BOX_COLOUR_DISTANCE)
+        box_chrom.append(np.median(chrom[mine], axis=0) if mine.any() else np.median(chrom[bright], axis=0))
+    colour_dist = np.linalg.norm(chrom[None, :, :] - np.array(box_chrom)[:, None, :], axis=2)
+    colour_dist[:, ~bright] = 0.0
+    return colour_dist
