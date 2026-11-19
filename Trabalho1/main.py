@@ -115,6 +115,15 @@ def main():
 CAMERA_COLORS = [[0.9, 0.3, 0.3], [0.3, 0.8, 0.3], [0.3, 0.4, 0.9], [0.9, 0.8, 0.2],
                  [0.8, 0.3, 0.8], [0.2, 0.8, 0.8], [0.9, 0.5, 0.1], [0.5, 0.5, 0.5]]
 
+# Initial viewpoint of every 3D window (copied with Ctrl+C in an Open3D window, camera 0 frame).
+# The camera frame has y pointing down, so "up" is ~ -y; otherwise the scene appears upside down.
+VIEW = {
+    "front": [-0.38918421172498591, -0.27430820117149579, -0.87936946735377364],
+    "lookat": [-0.21026629438816719, 0.58156416183949011, 1.0073384614691785],
+    "up": [0.30026997198607369, -0.940268749125868, 0.16041391255361312],
+    "zoom": 0.7,
+}
+
 
 def show_registration(clouds, transforms, names, ground_truth):
     """Aggregated cloud with one colour per camera; then overlaid with the true aggregation."""
@@ -123,7 +132,7 @@ def show_registration(clouds, transforms, names, ground_truth):
         c = registration.transformed(cloud.voxel_down_sample(0.01), T)
         c.paint_uniform_color(CAMERA_COLORS[k % len(CAMERA_COLORS)])
         coloured.append(c)
-    o3d.visualization.draw_geometries(coloured, window_name="Part 1 - one colour per camera")
+    o3d.visualization.draw_geometries(coloured, window_name="Part 1 - one colour per camera", **VIEW)
 
     if ground_truth:
         true_transforms = evaluation.true_camera_transforms(ground_truth, names)
@@ -132,7 +141,7 @@ def show_registration(clouds, transforms, names, ground_truth):
         estimated.paint_uniform_color([1, 0.7, 0])
         true.paint_uniform_color([0, 0.65, 0.93])
         o3d.visualization.draw_geometries([estimated, true],
-                                          window_name="Part 1 - estimated (orange) vs true (blue)")
+                                          window_name="Part 1 - estimated (orange) vs true (blue)", **VIEW)
 
 
 def show_segmentation(aggregated, seg):
@@ -146,7 +155,7 @@ def show_segmentation(aggregated, seg):
     frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2)
     frame.transform(seg.T_camera0_table)
     o3d.visualization.draw_geometries([background, frame] + objects,
-                                      window_name="Part 2 - objects on the table (table frame shown)")
+                                      window_name="Part 2 - objects on the table (table frame shown)", **VIEW)
 
 
 def box_lines(T_camera0_box, length, width, height, color):
@@ -164,7 +173,7 @@ def show_boxes(aggregated, result_boxes, ground_truth):
     if ground_truth:
         geometries += [box_lines(b["T_camera0_box"], b["length"], b["width"], b["height"], [1, 0, 0])
                        for b in ground_truth["boxes"]]
-    o3d.visualization.draw_geometries(geometries, window_name="Part 3 - estimated (green) vs true (red)")
+    o3d.visualization.draw_geometries(geometries, window_name="Part 3 - estimated (green) vs true (red)", **VIEW)
 
 
 if __name__ == "__main__":
