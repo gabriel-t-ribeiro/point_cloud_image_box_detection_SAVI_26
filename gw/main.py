@@ -26,6 +26,7 @@ import open3d as o3d
 
 import bounding_box
 import evaluation
+import optimization
 import registration
 import segmentation
 
@@ -87,14 +88,27 @@ def main():
     # Part 3 - Boxes (base method: bounding box)
     # -------------------------------------------------------------------------
     print("\nPart 3 - boxes (bounding box)")
-    boxes = [bounding_box.bounding_box(c, seg.T_camera0_table)
-             for c in bounding_box.object_clouds(aggregated, seg)]
+    obj_clouds = bounding_box.object_clouds(aggregated, seg)
+    boxes = [bounding_box.bounding_box(c, seg.T_camera0_table) for c in obj_clouds]
     for box in boxes:
         print(f"  {box}")
-    result_boxes = bounding_box.boxes_to_result(boxes, seg.T_camera0_table)
+    bbox_result_boxes = bounding_box.boxes_to_result(boxes, seg.T_camera0_table)
 
     if ground_truth:
-        evaluation.print_box_errors(result_boxes, ground_truth, seg.T_camera0_table, "Bounding Box Errors")
+        evaluation.print_box_errors(bbox_result_boxes, ground_truth, seg.T_camera0_table, "Bounding Box Errors")
+
+    # -------------------------------------------------------------------------
+    # Part 3 - Boxes (main method: nonlinear least-squares optimization)
+    # -------------------------------------------------------------------------
+    print("\nPart 3 - boxes (optimization)")
+    all_obj_points = np.vstack([np.asarray(c.points) for c in obj_clouds]) if obj_clouds else np.empty((0, 3))
+    opt_boxes = optimization.optimize_boxes(all_obj_points, boxes, seg.T_camera0_table)
+    for box in opt_boxes:
+        print(f"  {box}")
+    result_boxes = bounding_box.boxes_to_result(opt_boxes, seg.T_camera0_table)
+
+    if ground_truth:
+        evaluation.print_box_errors(result_boxes, ground_truth, seg.T_camera0_table, "Optimization Errors")
     if args.show:
         show_boxes(aggregated, result_boxes, ground_truth)
 
